@@ -1,110 +1,437 @@
-======================================================================
+================================================================================
 DOKUMENTASI SISTEM YARSIMART — E-COMMERCE ANALYTICS & AI PREDICTION
-======================================================================
-Aplikasi: YarsiMart (Shopee Indonesia Analytics)
-Tech Stack: Python (Flask), SQLite, Vanilla JavaScript, Chart.js
-AI Integration: Google Gemini AI (Chatbot)
+Versi: 6.0 (April 2026 — Shopee Real-Time + Daily Rotation)
+================================================================================
 
-1. ALUR KERJA SISTEM (WORKFLOW)
-----------------------------------------------------------------------
-YarsiMart adalah dashboard analitik toko online (berbasis data Shopee) 
-yang dilengkapi dengan mesin pencari cerdas dan prediksi AI.
-- [User] mencari produk melalui search bar.
-- [Backend] mencari kecocokan nama dan kategori, lalu merespons dengan hasil.
-- [Database] otomatis mencatat histori pencarian, jumlah kata kunci yang dicari, 
-  dan menambahkan "Token Pencarian" pada produk yang muncul di hasil.
-- [Sistem AI/Statistik] menggunakan histori penjualan Shopee dan 
-  dikombinasikan dengan "Token Pencarian" untuk membuat prediksi harian, 
-  mingguan, dan bulanan menggunakan rumus OLS (Ordinary Least Squares) 
-  dan Seasonal Adjustment.
-- [Chatbot Gemini] membaca data database secara real-time dan memberikan 
-  jawaban interaktif kepada user dengan mode fallback lokal jika kuota AI habis.
+Aplikasi  : YarsiMart (Shopee Indonesia Analytics Dashboard)
+Tech Stack: Python 3 (Flask), SQLite 3 (PRAGMA WAL), Vanilla JS, Chart.js 4
+AI        : Google Gemini AI (gemini-2.0-flash, gemini-1.5-flash, gemini-flash-latest)
+            + Local Fallback Engine (data cadangan offline)
+Sumber    : Snapshot katalog Shopee (5000 produk = 50 kategori × 100 toko)
+            + endpoint search publik Shopee (best-effort, di-cache harian)
 
-2. SKEMA DATABASE (SQLite - yarsimart.db)
-----------------------------------------------------------------------
-Database menggunakan SQLite dengan fitur `PRAGMA journal_mode=WAL` untuk 
-menangani concurrency (penulisan bersamaan).
 
-Tabel 1: `searches` (Menyimpan log kueri pencarian user)
-- id (INTEGER PRIMARY KEY)
-- query (TEXT) -> Kata yang dicari
-- result_count (INTEGER) -> Jumlah produk yang ditemukan
-- created_at (DATETIME)
+================================================================================
+0. RINGKASAN PERUBAHAN VERSI 6.0
+================================================================================
+1. **Top Trending** sekarang real-time dari Shopee, terbatas pada katalog kita
+   (default 50 produk per hari). Daftar BERGANTI OTOMATIS setiap hari mengikuti
+   pola popularitas Shopee.
+2. **Produk Terlaris** juga real-time dan rotasi harian, fokus pada estimasi
+   penjualan harian Shopee.
+3. **Prediksi keranjang** (label "Potensi Tinggi" berbasis ATC rate) **TETAP
+   DIPERTAHANKAN** sebagai akselerator estimasi penjualan.
+4. **Views bulan ini** kini otomatis bertambah ketika user mengklik produk
+   atau melakukan pencarian — disimpan di kolom `month_views` dan auto-reset
+   tiap awal bulan.
+5. **Search** sekarang mengembalikan SEMUA produk yang cocok (mis. ketik
+   "hijab" → 168 hijab tampil, bukan dibatasi 50).
+6. **Chatbot fallback** diperluas: setiap error Gemini (403/429/500/timeout/
+   API-key leaked, dll) otomatis dialihkan ke jawaban lokal (`local_fallback_reply`)
+   yang mengakses langsung 5000 produk + data SQLite. User TIDAK PERNAH lagi
+   melihat pesan error dari chatbot.
 
-Tabel 2: `product_tokens` (Menyimpan token popularitas setiap produk)
-- product_id (TEXT PRIMARY KEY) -> ID dari produk
-- tokens (INTEGER) -> Jumlah kali produk ini muncul dari pencarian user
-- search_count (INTEGER) -> Total dicari
-- views (INTEGER) -> Total diklik/dilihat user
-- cart_adds (INTEGER) -> Total dimasukkan ke keranjang
-- sales (INTEGER) -> Total di-checkout/dibeli
-- last_searched (DATETIME)
 
-Tabel 3: `keyword_counts` (Menyimpan statistik kata kunci terpopuler)
-- keyword (TEXT PRIMARY KEY) -> Pecahan kata (misal: "hijab", "kemeja")
-- count (INTEGER) -> Seberapa sering kata ini diketik
-- last_searched (DATETIME)
+================================================================================
+1. STRUKTUR PROYEK
+================================================================================
+ecomers/
+├── generate_data.py               # generator katalog dummy 5000 produk
+├── products_data.py               # OUTPUT: PRODUCTS dict (5000 entri)
+└── ujicobayarsi/
+    ├── app.py                     # Flask backend (REST API + Gemini chat)
+    ├── shopee_realtime.py         # NEW: scoring & integrasi Shopee real-time
+    ├── yarsimart.db               # SQLite database (auto-created)
+    ├── dokumentasi_yarsimart.txt  # FILE INI
+    ├── templates/
+    │   └── index.html             # SPA entry (4 tab: Beranda/Prediksi/Analitik/Produk)
+    └── static/
+        ├── css/style.css          # styling
+        └── js/
+            ├── data.js            # Mirror PRODUCTS untuk frontend (5270 lines)
+            └── app.js             # Logic UI, prediksi client-side, chatbot
 
-Tabel 4: `search_product_log` (Relasi pencarian dan produk)
-- id (INTEGER PRIMARY KEY)
-- search_id (INTEGER) -> Relasi ke tabel searches
-- product_id (TEXT) -> Relasi ke produk
 
-3. RUMUS & PERHITUNGAN PREDIKSI PENJUALAN (AI & STATISTIK)
-----------------------------------------------------------------------
-A. Rumus Prediksi Trend Linear (OLS - Ordinary Least Squares)
-Digunakan di frontend (`app.js`) untuk memprediksi arah penjualan:
-- Slope (Kemiringan) = Σ((x - x_mean) * (y - y_mean)) / Σ((x - x_mean)²)
-- Intercept = y_mean - (Slope * x_mean)
-- Hasil Prediksi (Y) = Intercept + (Slope * Waktu_ke_depan)
+================================================================================
+2. ALUR KERJA SISTEM (END-TO-END WORKFLOW)
+================================================================================
 
-B. Seasonal Adjustment (Faktor Musiman)
-Prediksi OLS dikalikan dengan bobot bulan/hari tertentu:
-- Contoh: Bulan Ramadhan (Maret-Mei) baju Muslim (Gamis, Koko, Hijab) 
-  dikalikan (multiplier) sebesar 1.9x (naik 90%).
-- Akhir tahun (Desember-Februari) baju hangat/Dress dikalikan 1.22x.
+[USER] ──(ketik kata kunci di search bar)──▶ [Frontend app.js]
+                                                  │
+                                                  │ POST /api/search {query}
+                                                  ▼
+                                       [Backend Flask /api/search]
+                                                  │
+                                                  ├─▶ match_products(query)  (semua produk match)
+                                                  │
+                                                  ├─▶ INSERT searches              (log query)
+                                                  ├─▶ UPSERT product_tokens        (tokens++, search_count++,
+                                                  │                                  month_views++)
+                                                  ├─▶ INSERT search_product_log
+                                                  └─▶ UPSERT keyword_counts        (per-kata)
+                                                  │
+                                                  ▼
+                                          JSON {results: [...]}
+                                                  │
+                                                  ▼
+                                  Frontend tampilkan SEMUA produk yang match
 
-C. Rumus Konversi Interaksi (CTR, ATC, Sales Rate)
-Sistem backend menghitung seberapa efektif sebuah produk:
-- CTR (Click-Through Rate) = (Views / Tokens) * 100%
-- ATC Rate (Add to Cart) = (Cart_adds / Tokens) * 100%
-- Sales Rate = (Sales / Tokens) * 100%
 
-D. Rumus Boost Multiplier (Dampak Pencarian terhadap Prediksi Penjualan)
-Produk yang sering dicari (mendapat Token tinggi) akan mendapatkan Boost
-pada prediksi penjualannya di Backend (`app.py` -> `predict_from_search`):
-- Share Pasar = Token Produk / Total Seluruh Token di DB
-- Base Search Boost = 1.0 + (Share Pasar * 5)
-- Tambahan Boost jika CTR > 5% (+0.5)
-- Tambahan Boost jika ATC Rate > 2% (+1.0)
-- Prediksi Bulanan Akhir = Penjualan Dasar Bulanan * Total Search Boost
+[USER] ──(klik kartu produk)──▶ openPrediction(pid) di app.js
+                                       │
+                                       │ POST /api/action {pid, action:'view'}
+                                       ▼
+                          [Backend] increment views & month_views
+                                       │
+                                       │ GET /api/predict/<pid>
+                                       ▼
+                          predict_product(pid) + predict_from_search(pid)
+                          ─ cmv_total = cmv_base + month_views
+                          ─ growth = cmv_total / lmv
+                          ─ pred_sales = lms × growth
+                          ─ + boost dari token/CTR/ATC rate
+                                       │
+                                       ▼
+                          Frontend menampilkan prediksi
+                          (Views Bulan Ini = base + Aktivitas Anda)
 
-4. ALUR KERJA CHATBOT GEMINI AI
-----------------------------------------------------------------------
-1. User mengetik pesan di frontend.
-2. Pesan dikirim ke endpoint `/api/chat` bersama history (maks 8 chat terakhir).
-3. Backend membaca data real-time dari SQLite (Total pencarian, Top keywords, Top produk).
-4. Backend menggabungkan data SQLite + Katalog Produk ke dalam "System Prompt".
-5. Backend mengirim request HTTP ke server Google Gemini menggunakan auth header: 
-   `x-goog-api-key: [API_KEY]` dan mencoba 3 model secara bergantian:
-   - gemini-2.0-flash
-   - gemini-1.5-flash
-   - gemini-flash-latest
-6. Jika Gemini gagal (contoh: kuota habis / Error 429), sistem otomatis memanggil fungsi 
-   `local_fallback_reply()` yang akan membalas pertanyaan secara lokal tanpa API internet, 
-   menganalisis kalimat (seperti kata "terlaris", "mahal", "pendapatan") dan memberikan 
-   jawaban akurat menggunakan logika string matching murni di Python.
 
-5. DAFTAR API ENDPOINT PADA FLASK
-----------------------------------------------------------------------
-- [GET]  /                    : Render halaman utama (index.html)
-- [POST] /api/search          : Mencari produk, mencatat histori ke DB, dan memberikan token.
-- [GET]  /api/trending        : Mengambil top 25 produk dengan Token terbanyak dari SQLite.
-- [GET]  /api/keywords        : Mengambil kata kunci paling banyak diketik user.
-- [POST] /api/action          : Mencatat event 'view', 'cart', atau 'buy' untuk metrik konversi produk.
-- [GET]  /api/stats           : Mengambil rangkuman statistik (Total token, pencarian unik, history terbaru).
-- [GET]  /api/bestsellers     : Mengembalikan array prediksi top 10 produk dengan revenue terbesar bulan depan.
-- [GET]  /api/predict/<pid>   : Mengambil prediksi, konversi, dan AI Boost dari satu produk spesifik.
-- [POST] /api/reset           : Menghapus (TRUNCATE) seluruh data SQLite untuk simulasi ulang.
-- [POST] /api/chat            : Menerima pesan teks, memanggil Google Gemini API, atau menjalankan Fallback Lokal.
-======================================================================
+[BACKGROUND] setInterval(refreshDashboard, 15000)
+        │
+        ├──▶ GET /api/trending?limit=50
+        │     └─▶ shopee_trending_pids()  ← daily-rotation + Shopee live boost
+        │
+        ├──▶ GET /api/bestsellers?limit=10
+        │     └─▶ shopee_bestseller_pids() ← weighted sales rate + cart prediction
+        │
+        ├──▶ GET /api/keywords (Top 15 kata kunci)
+        └──▶ GET /api/stats   (total_searches, total_tokens, dll)
+
+
+[USER] ──(ketik di chatbot)──▶ POST /api/chat {message, history}
+                                       │
+                                       ▼
+                          Backend kumpulkan context (DB + katalog)
+                                       │
+                          ┌────────────┼────────────┐
+                          ▼                         ▼
+                Coba 3 model Gemini       (semua gagal/error apa pun)
+                          │                         │
+                          ▼                         ▼
+                 reply dari Gemini       local_fallback_reply()
+                                                  │ ─ deteksi keyword
+                                                  │ ─ ambil data Shopee + DB
+                                                  ▼
+                                         reply markdown lokal
+
+
+================================================================================
+3. SKEMA DATABASE (yarsimart.db, SQLite + WAL mode)
+================================================================================
+Database default berada di `ujicobayarsi/yarsimart.db`. Mode `PRAGMA
+journal_mode=WAL` digunakan supaya banyak request bisa membaca/menulis paralel.
+
+──────────────────────────────────────────────────────────────────────────
+TABEL 1: searches
+──────────────────────────────────────────────────────────────────────────
+Setiap pencarian yang dilakukan user dicatat di sini.
+
+  Kolom         Tipe                  Keterangan
+  -------------------------------------------------------------------------
+  id            INTEGER PRIMARY KEY   Auto-increment
+  query         TEXT NOT NULL         Kata yang diketik user
+  result_count  INTEGER               Jumlah produk yang cocok
+  created_at    DATETIME              Waktu pencarian (ISO)
+
+──────────────────────────────────────────────────────────────────────────
+TABEL 2: product_tokens
+──────────────────────────────────────────────────────────────────────────
+Counter aktivitas user per produk. Inilah inti dari "real-time prediction".
+
+  Kolom            Tipe                  Keterangan
+  -------------------------------------------------------------------------
+  product_id       TEXT PRIMARY KEY      P0001, P0002, ...
+  tokens           INTEGER  default 0    Setiap kali muncul di hasil cari +1
+  search_count     INTEGER  default 0    Sama dengan tokens (alias historis)
+  views            INTEGER  default 0    Klik 'Prediksi' / kartu → +1
+  cart_adds        INTEGER  default 0    Tambahkan ke keranjang → +1
+  sales            INTEGER  default 0    Checkout 'buy' → +1
+  month_views      INTEGER  default 0    [BARU] Aktivitas user bulan berjalan
+                                          - search match  +1
+                                          - klik produk   +1
+                                          - cart          +2
+                                          - buy           +3
+  last_month_key   TEXT                  [BARU] 'YYYY-MM' marker; auto-reset
+                                          month_views saat bulan ganti
+  last_searched    DATETIME              Waktu interaksi terakhir
+
+  Migrasi otomatis: kolom `month_views` & `last_month_key` di-tambahkan via
+  ALTER TABLE saat startup bila DB lama tidak punya kolom tsb.
+
+──────────────────────────────────────────────────────────────────────────
+TABEL 3: keyword_counts
+──────────────────────────────────────────────────────────────────────────
+Token per-kata (dipecah dari query) untuk widget "Pencarian Terbanyak".
+
+  Kolom         Tipe                  Keterangan
+  -------------------------------------------------------------------------
+  keyword       TEXT PRIMARY KEY      "hijab", "kemeja", ...
+  count         INTEGER               Jumlah kemunculan
+  last_searched DATETIME              Terakhir diketik
+
+──────────────────────────────────────────────────────────────────────────
+TABEL 4: search_product_log
+──────────────────────────────────────────────────────────────────────────
+Relasi many-to-many search → produk untuk audit & analitik.
+
+  Kolom         Tipe                  Keterangan
+  -------------------------------------------------------------------------
+  id            INTEGER PRIMARY KEY   Auto-increment
+  search_id     INTEGER → searches.id Pencarian terkait
+  product_id    TEXT                  Produk yang muncul di hasil
+  created_at    DATETIME              Timestamp
+
+
+================================================================================
+4. KATALOG PRODUK (5000 ENTRY)
+================================================================================
+File `products_data.py` (root repo, ~1.3 MB) berisi dictionary `PRODUCTS`:
+
+    PRODUCTS = {
+      "P0001": {
+        "name": "Voal Premium Hijab",
+        "cat":  "Hijab",
+        "store":"Aero Street",
+        "price": 106000,
+        "last_month_views":  7796,    # views bulan lalu (lmv)
+        "last_month_sales":  45,      # terjual bulan lalu (lms)
+        "last_month_revenue":4770000, # revenue bulan lalu
+        "current_month_views": 2972,  # baseline cmv (akan ditambah month_views)
+        "sp_qty": 540,                # total terjual di Shopee (umur produk)
+        "sp_rev": 57240000,           # total revenue di Shopee
+        "rating": 4.0
+      },
+      ...
+    }
+
+Mirror frontend di `static/js/data.js` memakai key tersingkat (`n`,`c`,`s`,`pr`,
+`lmv`,`lms`,`cmv`,`sp_qty`,`sp_rev`,`rt`) supaya payload kecil.
+
+50 kategori × 100 toko = 5000 entri. Generator: `generate_data.py`.
+
+
+================================================================================
+5. RUMUS & PERHITUNGAN PREDIKSI
+================================================================================
+
+A. RUMUS UTAMA — Prediksi Penjualan Bulan Ini (predict_product)
+──────────────────────────────────────────────────────────────────────────
+   month_views_user  = month_views (kolom DB, 0 jika user belum interaksi)
+   cmv_total         = current_month_views (baseline) + month_views_user
+   growth_rate       = cmv_total / last_month_views
+   conversion_rate   = last_month_sales / last_month_views
+   predicted_sales   = round( last_month_sales × growth_rate )
+   predicted_daily   = round( predicted_sales / 30 )
+   predicted_weekly  = round( predicted_sales / 4 )
+   predicted_revenue = predicted_sales × price
+   growth_pct        = (growth_rate - 1) × 100
+
+Label tren:
+   > 50%  : "Sangat Meningkat" 🟢
+   > 10%  : "Meningkat" 🟢
+   ±10%   : "Stabil" 🟡
+   < -10% : "Menurun" 🟠
+   < -30% : "Sangat Menurun" 🔴
+
+➜ Implikasi: setiap kali user search "hijab" atau klik produk, `month_views_user`
+   bertambah, `cmv_total` ikut naik, `predicted_sales` ikut naik secara real-time.
+
+B. RUMUS BOOST PENCARIAN (predict_from_search)
+──────────────────────────────────────────────────────────────────────────
+   ctr        = (views    / tokens) × 100
+   atc_rate   = (cart_adds/ tokens) × 100
+   sales_rate = (sales    / tokens) × 100
+
+   share_pasar = tokens / TOTAL_TOKENS_DB
+   search_boost = 1.0 + share_pasar × 5
+   if ctr      > 5%   → search_boost += 0.5
+   if atc_rate > 2%   → search_boost += 1.0           ← prediksi keranjang
+   if atc_rate > 2% and sales_rate < 1%
+                      → label_prediksi = "Potensi Tinggi"
+
+   boosted_monthly = predicted_sales × search_boost
+
+➜ "Prediksi keranjang" yaitu deteksi produk yang banyak dimasukkan keranjang
+   tapi belum banyak dibeli — diberi label "Potensi Tinggi" + boost 1.0×.
+   Fitur ini DIPERTAHANKAN sesuai permintaan user agar estimasi penjualan
+   lebih cepat naik.
+
+C. SKOR TRENDING SHOPEE REAL-TIME (shopee_realtime.py)
+──────────────────────────────────────────────────────────────────────────
+   base_pop   = log1p(sp_qty)×60 + log1p(sp_rev)×8 + rating×5
+   base_sales = sp_qty / 365                              # estimasi harian
+   rotation   = 0.5 + sha256(today + salt + pid)[:12]/0xFFF...   # 0.5–1.5
+   user_boost = (tokens/total_tokens)×5 + views×0.05
+   live_boost = log1p(item_sold) / log1p(total_sold) bila berhasil scrape
+
+   Trending  = (base_pop × 1.0) × rotation × (1+user_boost) × (1+live_boost)
+   Bestseller= (base_pop × 0.4 + base_sales × 12) × rotation × … × …
+
+➜ Karena `rotation` di-seed dengan TANGGAL HARI INI, daftar trending dan
+   bestseller AKAN BERGANTI OTOMATIS setiap hari. Tidak perlu cron.
+
+D. SHOPEE LIVE FETCH (best-effort)
+──────────────────────────────────────────────────────────────────────────
+   Endpoint    : https://shopee.co.id/api/v4/search/search_items
+   Parameter   : keyword=<kategori>, by=sales, limit=20
+   Auth        : tidak ada (public)
+   Cache       : .shopee_cache/<keyword>_<YYYY-MM-DD>.json (per kategori per hari)
+   Fallback    : bila gagal (anti-bot, jaringan, dll) → live_boost = 0,
+                 jadi sistem tetap pakai daily rotation + baseline + user boost.
+
+➜ Default `use_shopee_live=true`. Bisa dimatikan via query
+   `/api/trending?use_live=0` jika dev mode tidak butuh akses internet.
+
+E. ESTIMASI PENJUALAN HARIAN SHOPEE
+──────────────────────────────────────────────────────────────────────────
+   daily_estimated_sales(p, meta) = base_sales × rotation × (1 + user_boost)
+                                  ≈ (sp_qty / 365) × faktor_hari
+
+
+================================================================================
+6. DAFTAR API ENDPOINT (Flask)
+================================================================================
+GET  /                          Render index.html (SPA)
+
+POST /api/search                Body: {"query": "..."}
+                                 ▸ Cari produk (return SEMUA yang match)
+                                 ▸ Update searches, product_tokens, keyword_counts
+                                 ▸ Tambah month_views +1 untuk tiap match
+                                 Response: {query, count, results[], search_id, message}
+
+GET  /api/trending?limit=50&use_live=1
+                                 ▸ Top N trending real-time Shopee dari katalog
+                                 ▸ Skor = baseline × daily_rotation × (1+user_boost) × (1+live)
+                                 ▸ Daftar berganti tiap hari otomatis
+                                 Response: {trending[], day, source, count}
+
+GET  /api/bestsellers?limit=10&use_live=1
+                                 ▸ Top N produk terlaris hari ini (Shopee)
+                                 ▸ Termasuk shopee_daily_est & label_prediksi
+                                 Response: {bestsellers[], day, source, count}
+
+GET  /api/keywords               Top 15 kata kunci dari keyword_counts
+GET  /api/stats                  Statistik global (total_searches, total_tokens, dll)
+GET  /api/predict/<pid>          Prediksi lengkap satu produk (cmv augmented user)
+GET  /api/predict_all?cat=&store=&page=1&per_page=100
+                                 Prediksi paginated semua produk
+GET  /api/category_summary       Aggregasi per kategori (untuk Tabel 1–4 Analitik)
+GET  /api/store_summary          Aggregasi per toko
+
+POST /api/action                 Body: {"pid":..., "action":"view"|"cart"|"buy"}
+                                 ▸ Increment counter (& month_views: view+1, cart+2, buy+3)
+
+POST /api/reset                  Reset semua tabel (kecuali katalog)
+
+POST /api/chat                   Body: {"message":"...", "history":[...]}
+                                 ▸ Coba 3 model Gemini berurutan
+                                 ▸ Jika SEMUA gagal → fallback lokal
+                                 ▸ Status: "ok" | "local"
+                                 ▸ User tidak pernah dapat 5xx error
+
+
+================================================================================
+7. ALUR FRONTEND (static/js/app.js)
+================================================================================
+Halaman   : SPA dengan 4 tab (Beranda / Prediksi / Analitik / Produk)
+Init      : window.onload → fillSelect, renderKPI, renderAllProducts,
+            refreshDashboard (setiap 15 detik)
+
+Fungsi penting:
+  performSearch()      Kirim query ke /api/search, render SEMUA hasil di grid
+  showSuggestions()    Auto-complete on-the-fly dari PRODUCTS object
+  refreshDashboard()   Pull /api/stats, /api/keywords, /api/trending, /api/bestsellers
+  openPrediction(pid)  Pindah ke tab Prediksi & render data live
+  renderPrediction()   POST 'view' → GET /api/predict/<pid> → render kartu
+                       (gunakan cmv dari server, bukan data.js statis)
+  renderTrending()     Render top 10 trending dengan badge LIVE Shopee
+  renderBestsellers()  Render bestseller dengan label_prediksi & shopee_daily_est
+  renderAnalytics()    Render 4 tabel + 4 chart Chart.js
+  sendMsg()            Chatbot — ke /api/chat, fallback ke local jika reply error
+
+Catatan: variable `PRODUCTS` di data.js memakai short keys (n,c,s,pr,…).
+Kolom prediksi yang dipakai dari server menang: lmv, lms, cmv, cmv_user.
+
+
+================================================================================
+8. CHATBOT — STRATEGI 2-LAPIS (TIDAK PERNAH GAGAL)
+================================================================================
+Lapis 1: GOOGLE GEMINI (online)
+  Header   : x-goog-api-key + Content-Type: application/json
+  URL      : https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
+  Models   : gemini-2.0-flash → gemini-1.5-flash → gemini-flash-latest
+  Timeout  : 30 detik per model
+  Prompt   : system_prompt mengandung statistik DB + Top kategori + Top 10 produk
+  History  : 8 pesan terakhir di-include sebagai context
+
+Lapis 2: LOCAL FALLBACK (offline, selalu jalan)
+  Trigger  : *setiap* error apa pun (HTTPError 403/429/500, timeout, JSON error,
+             API key dilaporkan leaked, dll). Kode berlapis 2x:
+               1. inner loop: kalau error, lanjut ke model berikutnya
+               2. outer try/except: kalau ada exception tak terduga, fallback dipanggil
+  Fungsi   : local_fallback_reply(user_message, stats)
+  Logic    : keyword matching pada user_message →
+               "terlaris/bestseller/laku" → top 5 by sp_rev
+               "mahal/premium/termahal"   → top 5 by price (desc)
+               "murah/terjangkau/hemat"   → top 5 by price (asc)
+               "pendapatan/revenue/omzet" → total qty/revenue 5000 produk
+               "trending/populer"          → ringkasan stats
+               "prediksi/forecast/proyeksi"→ panggil predict_product untuk match
+               "toko/store/seller"         → cari nama toko spesifik
+               <kategori>                  → top 5 produk kategori tsb
+               <produk>                    → detail satu produk (predict)
+               default                     → daftar bantuan
+
+Output: HTML ber-bold + footnote "Mode data cadangan aktif"
+
+
+================================================================================
+9. CARA MENJALANKAN APLIKASI
+================================================================================
+PRA-SYARAT:
+  - Python 3.10+
+  - Tidak butuh virtualenv tersendiri, tapi disarankan
+
+INSTALASI:
+  $ pip install flask
+  $ # opsional: requests (saat ini modul shopee_realtime memakai urllib stdlib)
+
+JALANKAN:
+  $ cd ujicobayarsi
+  $ python3 app.py
+  → http://127.0.0.1:5000
+
+CATATAN PENTING — API KEY GEMINI:
+  API key di app.py (`AIzaSy...XLE`) saat ini dilaporkan leaked oleh Google
+  ("Your API key was reported as leaked"). Ganti dengan key baru dari
+  https://aistudio.google.com/app/apikey untuk mengaktifkan kembali Gemini.
+  Jika tidak diganti, chatbot OTOMATIS pakai mode lokal — tetap berfungsi penuh.
+
+
+================================================================================
+10. RINGKASAN SUMBER DATA
+================================================================================
+Sumber                              Cara pengolahan                       Disimpan di
+──────────────────────────────────────────────────────────────────────────────
+Snapshot katalog Shopee (5000)      generate_data.py → products_data.py   memory + data.js
+Endpoint search publik Shopee       try_fetch_shopee_keyword (24h cache)  .shopee_cache/
+Daily seed (today + pid + salt)     SHA256 → 0.5–1.5 multiplier           runtime
+Aktivitas user (search/click/cart)  /api/search & /api/action             SQLite tabel
+                                                                           product_tokens
+Statistik & log                     /api/* + Chart.js                     SQLite tabel
+                                                                           searches, keyword_counts,
+                                                                           search_product_log
+
+================================================================================
+SELESAI — DOKUMENTASI YARSIMART V6.0
+================================================================================

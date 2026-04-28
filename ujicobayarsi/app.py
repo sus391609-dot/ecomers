@@ -5,9 +5,15 @@ Flask Backend with SQLite Database + Gemini AI Chatbot
 """
 from flask import Flask, jsonify, request, render_template
 import sqlite3, os, re, math, json
-from datetime import datetime
+from datetime import datetime, date
 import urllib.request
 import urllib.error
+
+from shopee_realtime import (
+    shopee_trending_pids,
+    shopee_bestseller_pids,
+    daily_estimated_sales,
+)
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 DB_PATH = os.path.join(os.path.dirname(__file__), 'yarsimart.db')
@@ -61,6 +67,8 @@ def init_db():
             views INTEGER DEFAULT 0,
             cart_adds INTEGER DEFAULT 0,
             sales INTEGER DEFAULT 0,
+            month_views INTEGER DEFAULT 0,
+            last_month_key TEXT,
             last_searched DATETIME
         );
         CREATE TABLE IF NOT EXISTS keyword_counts (
@@ -76,6 +84,12 @@ def init_db():
             FOREIGN KEY (search_id) REFERENCES searches(id)
         );
     """)
+    # Migrasi: pastikan kolom month_views & last_month_key ada walau DB lama
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(product_tokens)").fetchall()}
+    if "month_views" not in cols:
+        conn.execute("ALTER TABLE product_tokens ADD COLUMN month_views INTEGER DEFAULT 0")
+    if "last_month_key" not in cols:
+        conn.execute("ALTER TABLE product_tokens ADD COLUMN last_month_key TEXT")
     for pid in PRODUCTS:
         conn.execute(
             "INSERT OR IGNORE INTO product_tokens (product_id, tokens, search_count, views, cart_adds, sales) VALUES (?, 0, 0, 0, 0, 0)",
@@ -87,7 +101,9 @@ def init_db():
 # ══════════════════════════════════════════════
 # SEARCH LOGIC
 # ══════════════════════════════════════════════
-def match_products(query, limit=50):
+def match_products(query, limit=None):
+    """Cari produk; default kembalikan SEMUA yang cocok (mis. semua hijab).
+    Set `limit` jika perlu membatasi (mis. dari chatbot summary)."""
     q = query.lower().strip()
     if not q:
         return []
@@ -111,15 +127,71 @@ def match_products(query, limit=50):
         if score > 0:
             results.append({"pid": pid, "score": score, **p})
     results.sort(key=lambda x: -x["score"])
-    return results[:limit]
+    if limit is not None:
+        return results[:limit]
+    return results
 
 # ══════════════════════════════════════════════
 # PREDICTION ENGINE (Real-Time)
 # ══════════════════════════════════════════════
-def predict_product(pid):
+def _month_key():
+    return date.today().strftime("%Y-%m")
+
+
+def _get_month_views(pid, conn=None):
+    """Ambil month_views untuk produk; reset jika bulan sudah ganti."""
+    own_conn = False
+    if conn is None:
+        conn = get_db()
+        own_conn = True
+    cur = conn.execute(
+        "SELECT month_views, last_month_key, tokens FROM product_tokens WHERE product_id=?",
+        (pid,),
+    ).fetchone()
+    mk = _month_key()
+    mv = 0
+    if cur:
+        if cur["last_month_key"] != mk:
+            # Reset counter saat bulan ganti
+            conn.execute(
+                "UPDATE product_tokens SET month_views=0, last_month_key=? WHERE product_id=?",
+                (mk, pid),
+            )
+            conn.commit()
+            mv = 0
+        else:
+            mv = cur["month_views"] or 0
+    if own_conn:
+        conn.close()
+    return mv
+
+
+def _bump_month_views(pid, delta=1, conn=None):
+    """Tambah month_views (+ reset bila bulan baru). Gunakan saat user search/click/cart."""
+    own_conn = False
+    if conn is None:
+        conn = get_db()
+        own_conn = True
+    mk = _month_key()
+    conn.execute(
+        """
+        UPDATE product_tokens
+        SET month_views = CASE WHEN last_month_key = ? THEN month_views + ? ELSE ? END,
+            last_month_key = ?
+        WHERE product_id=?
+        """,
+        (mk, delta, delta, mk, pid),
+    )
+    if own_conn:
+        conn.commit()
+        conn.close()
+
+
+def predict_product(pid, month_views_override=None):
     """
     Prediksi penjualan bulan ini berdasarkan data bulan lalu.
     Rumus: predicted_sales = last_month_sales * (current_month_views / last_month_views)
+    Note: current_month_views = baseline_cmv + month_views_dari_aktivitas_user.
     """
     p = PRODUCTS.get(pid)
     if not p:
@@ -128,10 +200,20 @@ def predict_product(pid):
     lmv = p.get("last_month_views", 1)
     lms = p.get("last_month_sales", 0)
     lmr = p.get("last_month_revenue", 0)
-    cmv = p.get("current_month_views", 0)
+    cmv_base = p.get("current_month_views", 0)
 
     if lmv <= 0:
         lmv = 1
+
+    # Tambahkan aktivitas user pada bulan ini (klik, search match, cart) ke views.
+    if month_views_override is None:
+        try:
+            month_views_user = _get_month_views(pid)
+        except Exception:
+            month_views_user = 0
+    else:
+        month_views_user = month_views_override
+    cmv = cmv_base + month_views_user
 
     conversion_rate = lms / lmv
     growth_rate = cmv / lmv if lmv > 0 else 1.0
@@ -169,6 +251,8 @@ def predict_product(pid):
         "last_month_sales": lms,
         "last_month_revenue": lmr,
         "current_month_views": cmv,
+        "current_month_views_base": cmv_base,
+        "current_month_views_user": month_views_user,
         "conversion_rate": round(conversion_rate * 100, 2),
         "growth_rate": round(growth_rate, 2),
         "growth_pct": growth_pct,
@@ -237,12 +321,18 @@ def api_search():
     now  = datetime.now().isoformat()
     cur = conn.execute("INSERT INTO searches (query, result_count, created_at) VALUES (?, ?, ?)", (query, len(results), now))
     search_id = cur.lastrowid
+    mk = _month_key()
     for pid in matched_pids:
         conn.execute("""
-            INSERT INTO product_tokens (product_id, tokens, search_count, last_searched)
-            VALUES (?, 1, 1, ?)
-            ON CONFLICT(product_id) DO UPDATE SET tokens = tokens + 1, search_count = search_count + 1, last_searched = ?
-        """, (pid, now, now))
+            INSERT INTO product_tokens (product_id, tokens, search_count, last_searched, month_views, last_month_key)
+            VALUES (?, 1, 1, ?, 1, ?)
+            ON CONFLICT(product_id) DO UPDATE SET
+                tokens = tokens + 1,
+                search_count = search_count + 1,
+                last_searched = ?,
+                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 1 ELSE 1 END,
+                last_month_key = ?
+        """, (pid, now, mk, now, mk, mk))
         conn.execute("INSERT INTO search_product_log (search_id, product_id, created_at) VALUES (?, ?, ?)", (search_id, pid, now))
     words = re.findall(r'[a-zA-Z\u00C0-\u024F]+', query.lower())
     for word in words:
@@ -264,19 +354,47 @@ def api_search():
 
 @app.route('/api/trending')
 def api_trending():
+    """Top trending real-time dari Shopee (di-filter ke katalog kita).
+    Rotasi harian: list ini berganti tiap hari mengikuti pola Shopee + aktivitas user.
+    """
+    top_n = int(request.args.get('limit', 50))
     conn = get_db()
-    rows = conn.execute("SELECT product_id, tokens, search_count, last_searched FROM product_tokens ORDER BY tokens DESC LIMIT 50").fetchall()
+    rows = conn.execute("SELECT product_id, tokens, views, last_searched FROM product_tokens").fetchall()
+    total_tokens = sum((r["tokens"] or 0) for r in rows)
+    token_map = {r["product_id"]: ((r["tokens"] or 0), (r["views"] or 0)) for r in rows}
+    last_searched_map = {r["product_id"]: r["last_searched"] for r in rows}
     conn.close()
+
+    use_live = request.args.get('use_live', '1') != '0'
+    scored = shopee_trending_pids(
+        PRODUCTS, token_map, total_tokens,
+        top_n=top_n, use_shopee_live=use_live,
+    )
+
     trending = []
-    for r in rows:
-        pid = r["product_id"]
+    for pid, score, meta in scored:
         p = PRODUCTS.get(pid, {})
         trending.append({
-            "pid": pid, "name": p.get("name",""), "cat": p.get("cat",""), "store": p.get("store",""),
-            "price": p.get("price",0), "sp_qty": p.get("sp_qty",0), "sp_rev": p.get("sp_rev",0),
-            "tokens": r["tokens"], "search_count": r["search_count"], "last_searched": r["last_searched"],
+            "pid": pid,
+            "name": p.get("name", ""),
+            "cat": p.get("cat", ""),
+            "store": p.get("store", ""),
+            "price": p.get("price", 0),
+            "sp_qty": p.get("sp_qty", 0),
+            "sp_rev": p.get("sp_rev", 0),
+            "tokens": meta["tokens"],
+            "search_count": meta["tokens"],
+            "last_searched": last_searched_map.get(pid),
+            "trend_score": round(score, 2),
+            "shopee_rotation": meta["rotation"],
+            "shopee_live_boost": meta["shopee_live_boost"],
         })
-    return jsonify({"trending": trending})
+    return jsonify({
+        "trending": trending,
+        "day": date.today().isoformat(),
+        "source": "shopee_realtime",
+        "count": len(trending),
+    })
 
 @app.route('/api/keywords')
 def api_keywords():
@@ -293,12 +411,35 @@ def api_action():
     if not pid or action not in ['view', 'cart', 'buy']:
         return jsonify({"error": "Invalid action"}), 400
     conn = get_db()
+    mk = _month_key()
     if action == 'view':
-        conn.execute("UPDATE product_tokens SET views = views + 1 WHERE product_id=?", (pid,))
+        conn.execute(
+            """UPDATE product_tokens SET
+                views = views + 1,
+                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 1 ELSE 1 END,
+                last_month_key = ?
+               WHERE product_id=?""",
+            (mk, mk, pid),
+        )
     elif action == 'cart':
-        conn.execute("UPDATE product_tokens SET cart_adds = cart_adds + 1 WHERE product_id=?", (pid,))
+        # Cart juga dianggap sinyal kuat → month_views +2
+        conn.execute(
+            """UPDATE product_tokens SET
+                cart_adds = cart_adds + 1,
+                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 2 ELSE 2 END,
+                last_month_key = ?
+               WHERE product_id=?""",
+            (mk, mk, pid),
+        )
     elif action == 'buy':
-        conn.execute("UPDATE product_tokens SET sales = sales + 1 WHERE product_id=?", (pid,))
+        conn.execute(
+            """UPDATE product_tokens SET
+                sales = sales + 1,
+                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 3 ELSE 3 END,
+                last_month_key = ?
+               WHERE product_id=?""",
+            (mk, mk, pid),
+        )
     conn.commit()
     conn.close()
     return jsonify({"success": True, "message": f"{action} recorded"})
@@ -321,18 +462,46 @@ def api_stats():
 
 @app.route('/api/bestsellers')
 def api_bestsellers():
+    """Produk terlaris real-time dari Shopee — daftar ini juga rotasi harian.
+    Prediksi keranjang (cart-adds-rate → "Potensi Tinggi") TETAP DIPERTAHANKAN
+    sebagai akselerator estimasi penjualan, sesuai permintaan.
+    """
+    top_n = int(request.args.get('limit', 10))
     conn = get_db()
-    total_tokens = conn.execute("SELECT COALESCE(SUM(tokens),0) as s FROM product_tokens").fetchone()["s"]
-    rows = conn.execute("SELECT product_id, tokens FROM product_tokens WHERE tokens > 0 ORDER BY tokens DESC LIMIT 10").fetchall()
+    rows = conn.execute("SELECT product_id, tokens, views FROM product_tokens").fetchall()
+    total_tokens = sum((r["tokens"] or 0) for r in rows)
+    token_map = {r["product_id"]: ((r["tokens"] or 0), (r["views"] or 0)) for r in rows}
     conn.close()
+
+    use_live = request.args.get('use_live', '1') != '0'
+    scored = shopee_bestseller_pids(
+        PRODUCTS, token_map, total_tokens,
+        top_n=top_n, use_shopee_live=use_live,
+    )
+
     bestsellers = []
-    for r in rows:
-        pid = r["product_id"]
-        pred = predict_from_search(pid, total_tokens)
+    for pid, score, meta in scored:
         p = PRODUCTS.get(pid, {})
-        bestsellers.append({"pid": pid, "name": p.get("name",""), "cat": p.get("cat",""),
-                            "store": p.get("store",""), "price": p.get("price",0), "sp_qty": p.get("sp_qty",0), **pred})
-    return jsonify({"bestsellers": bestsellers})
+        pred = predict_from_search(pid, total_tokens)
+        daily_est = daily_estimated_sales(p, meta)
+        bestsellers.append({
+            "pid": pid,
+            "name": p.get("name", ""),
+            "cat": p.get("cat", ""),
+            "store": p.get("store", ""),
+            "price": p.get("price", 0),
+            "sp_qty": p.get("sp_qty", 0),
+            "shopee_daily_est": daily_est,
+            "shopee_score": round(score, 2),
+            "shopee_rotation": meta["rotation"],
+            **pred,
+        })
+    return jsonify({
+        "bestsellers": bestsellers,
+        "day": date.today().isoformat(),
+        "source": "shopee_realtime",
+        "count": len(bestsellers),
+    })
 
 @app.route('/api/predict/<pid>')
 def api_predict(pid):
@@ -592,6 +761,32 @@ def local_fallback_reply(user_message, stats):
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
+    """Chatbot endpoint. Tidak pernah membalas error 5xx ke user \u2014
+    setiap error apa pun di-handle dengan fallback data cadangan lokal."""
+    try:
+        return _api_chat_impl()
+    except Exception as e:
+        # Last-resort safety net: pastikan user selalu dapat respons.
+        try:
+            data = request.get_json(silent=True) or {}
+            msg = data.get('message', '')
+        except Exception:
+            msg = ''
+        try:
+            stats_local = {"total_searches": 0, "total_tokens": 0, "total_db_sales": 0, "unique_keywords": 0}
+            fb = local_fallback_reply(msg or 'bantu saya', stats_local)
+        except Exception:
+            fb = "Hai! Saya YarsiBot. Coba ketik 'produk terlaris' atau 'prediksi hijab'."
+        fb_html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", fb)
+        fb_html += (
+            f"\n\n<i style='font-size:0.72rem;color:#94a3b8'>"
+            f"\u26a0\ufe0f Layanan AI sedang gangguan, mode cadangan dipakai. ({type(e).__name__})"
+            f"</i>"
+        )
+        return jsonify({"reply": fb_html, "status": "local", "error_detail": str(e)})
+
+
+def _api_chat_impl():
     data         = request.json or {}
     user_message = data.get('message', '').strip()
     history      = data.get('history', [])
@@ -680,24 +875,44 @@ def api_chat():
                 reply = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 reply = reply or "Maaf, AI tidak menghasilkan respons. Coba lagi."
             else:
-                reply = "Maaf, saya tidak bisa menjawab itu. Silakan tanya seputar toko YarsiMart."
+                # Tidak ada candidates → jangan langsung error, fallback lokal supaya user dapat jawaban.
+                last_error = f"Model {model}: tidak ada candidates dari Gemini"
+                continue
             return jsonify({"reply": reply, "status": "ok", "model": model})
         except urllib.error.HTTPError as e:
-            if e.code == 403:
-                return jsonify({"error": "API key tidak valid (403)", "reply": "Konfigurasi API Gemini bermasalah."}), 502
-            last_error = f"Model {model}: HTTP {e.code}"
+            # Apa pun status (403, 429, 500, dll) → lanjut ke model berikutnya / fallback lokal.
+            try:
+                err_body = e.read().decode('utf-8', errors='ignore')[:200]
+            except Exception:
+                err_body = ""
+            last_error = f"Model {model}: HTTP {e.code} {err_body}"
             continue
         except Exception as e:
             last_error = f"Model {model}: {str(e)}"
             continue
 
-    stats_local = {"total_searches": total_searches, "total_tokens": total_tokens, "total_db_sales": total_sales, "unique_keywords": unique_kw}
-    fallback = local_fallback_reply(user_message, stats_local)
-    fallback_formatted = (
-        fallback.replace("**", "<b>", 1).replace("**", "</b>", 1)
-        + f"\n\n<i style='font-size:0.72rem;color:#94a3b8'>Mode lokal aktif — Gemini AI sedang penuh ({last_error})</i>"
+    # Semua model gagal → jawab dengan data cadangan lokal (TIDAK PERNAH error ke user)
+    stats_local = {
+        "total_searches": total_searches,
+        "total_tokens": total_tokens,
+        "total_db_sales": total_sales,
+        "unique_keywords": unique_kw,
+    }
+    try:
+        fallback = local_fallback_reply(user_message, stats_local)
+    except Exception as e:
+        fallback = (
+            "Saat ini layanan AI sedang gangguan, namun toko tetap berjalan normal. "
+            f"Silakan coba kata kunci lain. (debug: {e})"
+        )
+    # Render markdown bold & cantumkan info mode
+    fallback_formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", fallback)
+    fallback_formatted += (
+        f"\n\n<i style='font-size:0.72rem;color:#94a3b8'>"
+        f"ℹ️ Mode data cadangan aktif — Gemini AI tidak tersedia ({last_error})"
+        f"</i>"
     )
-    return jsonify({"reply": fallback_formatted, "status": "local"})
+    return jsonify({"reply": fallback_formatted, "status": "local", "error_detail": last_error})
 
 if __name__ == '__main__':
     init_db()
