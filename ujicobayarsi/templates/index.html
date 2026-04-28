@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>YarsiMart — Shopee Fashion Analytics + Search Engine</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <style>
+      /* CSS Keranjang & Action Buttons */
+      .btn-group {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+      }
+      .btn-sm {
+        padding: 0.4rem 0.8rem;
+        font-size: 0.75rem;
+        border-radius: 4px;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .btn-view {
+        background: #e0f2fe;
+        color: #0284c7;
+      }
+      .btn-view:hover {
+        background: #bae6fd;
+      }
+      .btn-cart {
+        background: #fef08a;
+        color: #854d0e;
+      }
+      .btn-cart:hover {
+        background: #fde047;
+      }
+
+      /* Sidebar Keranjang */
+      .cart-sidebar {
+        position: fixed;
+        right: -350px;
+        top: 0;
+        width: 320px;
+        height: 100vh;
+        background: white;
+        box-shadow: -5px 0 15px rgba(0, 0, 0, 0.1);
+        transition: 0.3s;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+      }
+      .cart-sidebar.open {
+        right: 0;
+      }
+      .cart-header {
+        padding: 1.2rem;
+        background: #fafafa;
+        border-bottom: 1px solid #eee;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .cart-header h3 {
+        margin: 0;
+        font-size: 1.1rem;
+      }
+      .cart-header button {
+        background: none;
+        border: none;
+        font-size: 1.2rem;
+        cursor: pointer;
+        color: #666;
+      }
+      .cart-items {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1rem;
+      }
+      .cart-footer {
+        padding: 1rem;
+        background: #fafafa;
+        border-top: 1px solid #eee;
+      }
+      .checkout-btn {
+        width: 100%;
+        padding: 0.9rem;
+        background: #ee4d2d;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: bold;
+        font-size: 1rem;
+      }
+      .checkout-btn:hover {
+        background: #d03d20;
+      }
+      .cart-fab {
+        position: fixed;
+        right: 20px;
+        bottom: 140px;
+        width: 56px;
+        height: 56px;
+        border-radius: 28px;
+        background: #22c55e;
+        color: white;
+        border: none;
+        cursor: pointer;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        font-size: 1.5rem;
+        z-index: 998;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .cart-fab:hover {
+        transform: scale(1.05);
+      }
+      .cart-badge {
+        position: absolute;
+        top: -2px;
+        right: -2px;
+        background: #ef4444;
+        color: white;
+        border-radius: 12px;
+        padding: 2px 6px;
+        font-size: 0.75rem;
+        font-weight: bold;
+        border: 2px solid white;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="header-inner">
+        <a class="logo" href="#" onclick="showPage('home')">
+          <div class="logo-icon">Y</div>
+          <div class="logo-text">
+            Rian Kamu Kok<span>Ganteng banget sih</span>
+          </div>
+        </a>
+        <nav>
+          <button class="active" onclick="showPage('home', this)">
+            🏠 Beranda
+          </button>
+          <button onclick="showPage('prediction', this)">🤖 Prediksi AI</button>
+          <button onclick="showPage('analytics', this)">📊 Analitik</button>
+          <button onclick="showPage('products', this)">🛍️ Produk</button>
+        </nav>
+        <div class="hdr-right">
+          <div class="clock-badge">
+            📅 <span id="live-date">—</span> &nbsp;⏰
+            <span id="live-time">—</span>
+          </div>
+          <button class="chat-btn" onclick="toggleChat()">💬 Tanya Bot</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ═══ BERANDA ═══ -->
+    <div class="page active" id="page-home">
+      <div class="hero fade-in">
+        <div class="hero-badge">
+          🛒 Shopee Indonesia — Yarsi Pratama University
+        </div>
+        <h1>
+          Shopee Fashion Analytics<br /><span
+            >Search Engine + SQLite Database</span
+          >
+        </h1>
+        <p>
+          Setiap pencarian langsung masuk ke database SQLite. Token otomatis
+          diberikan ke produk, trending & prediksi update real-time.
+        </p>
+        <div class="search-engine">
+          <div class="search-bar">
+            <span class="search-icon">🔍</span>
+            <input
+              type="text"
+              id="search-input"
+              placeholder="Cari produk Shopee... (contoh: hijab, kemeja, hoodie)"
+              autocomplete="off"
+              onkeydown="if (event.key === 'Enter') performSearch();"
+              oninput="showSuggestions()"
+            />
+            <button class="search-btn" onclick="performSearch()">
+              Cari & Simpan ke DB
+            </button>
+          </div>
+          <div class="search-suggestions" id="search-suggestions"></div>
+        </div>
+        <div class="hero-stats">
+          <div class="hstat">
+            <div class="val" id="stat-qty">11.637</div>
+            <div class="lbl">Unit Terjual Shopee</div>
+          </div>
+          <div class="hstat">
+            <div class="val">25</div>
+            <div class="lbl">Produk Fashion</div>
+          </div>
+          <div class="hstat">
+            <div class="val" id="stat-searches">0</div>
+            <div class="lbl">Total Pencarian DB</div>
+          </div>
+          <div class="hstat">
+            <div class="val" id="stat-tokens">0</div>
+            <div class="lbl">Total Token</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DB Status -->
+      <div class="db-status" id="db-status">
+        <div class="db-indicator">🗄️ SQLite Database</div>
+        <div id="db-msg">Siap menerima pencarian...</div>
+      </div>
+
+      <!-- Search Results -->
+      <div id="search-results" style="display: none">
+        <div class="section-header">
+          <div class="section-title">
+            🔍 Hasil Pencarian: "<span id="search-query-display"></span>"
+          </div>
+          <button class="see-all" onclick="closeSearchResults()">
+            ✕ Tutup
+          </button>
+        </div>
+        <div id="search-result-info"></div>
+        <div class="product-grid" id="search-results-grid"></div>
+      </div>
+
+      <!-- KPI -->
+      <div class="kpi-grid" id="kpi-grid"></div>
+
+      <!-- Pencarian Terbanyak -->
+      <div class="section-header">
+        <div class="section-title">🔍 Pencarian <span>Terbanyak</span></div>
+        <div class="tag" id="kw-count-tag">Database: 0 kata kunci</div>
+      </div>
+      <div id="top-keywords"></div>
+
+      <!-- Top Trending 25 Produk -->
+      <div class="section-header">
+        <div class="section-title">
+          🔥 Top <span>Trending</span> — 25 Produk
+        </div>
+        <div class="tag">Berdasarkan token pencarian dari SQLite</div>
+      </div>
+      <div class="trending-grid" id="trending-grid"></div>
+
+      <!-- Produk Terlaris -->
+      <div class="section-header">
+        <div class="section-title">
+          🏆 Produk <span>Terlaris</span> — Prediksi Penjualan
+        </div>
+        <div class="tag">
+          Estimasi dari frekuensi pencarian + data historis Shopee
+        </div>
+      </div>
+      <div class="bestseller-grid" id="bestseller-grid"></div>
+
+      <!-- Recent Searches -->
+      <div class="section-header">
+        <div class="section-title">
+          🕐 Riwayat <span>Pencarian</span> Terakhir
+        </div>
+        <button
+          class="see-all"
+          onclick="resetDB()"
+          style="border-color: #e53935; color: #e53935"
+        >
+          🗑️ Reset DB
+        </button>
+      </div>
+      <div id="recent-searches"></div>
+    </div>
+
+    <!-- ═══ PREDIKSI AI ═══ -->
+    <div class="page" id="page-prediction">
+      <div class="section-header">
+        <div>
+          <div class="section-title" style="font-size: 1.3rem">
+            🤖 Prediksi Penjualan <span>Shopee + Search AI</span>
+          </div>
+          <p
+            style="font-size: 0.78rem; color: var(--text3); margin-top: 0.25rem"
+          >
+            OLS + Seasonal + Search Token Boost · Data Shopee
+          </p>
+        </div>
+        <div
+          id="live-pred-badge"
+          style="
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: var(--red);
+            background: #fee2e2;
+            padding: 0.3rem 0.7rem;
+            border-radius: 6px;
+          "
+        >
+          ⏸ Pilih produk
+        </div>
+      </div>
+      <div class="pred-panel">
+        <div class="pred-header">
+          <div style="font-weight: 700; font-size: 0.9rem">
+            📦 Pilih Produk:
+          </div>
+          <div class="pred-select">
+            <select id="pred-select" onchange="renderPrediction()">
+              <option value="">-- Pilih --</option>
+            </select>
+          </div>
+        </div>
+        <div id="pred-content" style="display: none">
+          <div class="pred-cards" id="pred-cards"></div>
+          <div id="rev-pred"></div>
+          <div class="charts-grid-2" style="grid-template-columns: 1fr">
+            <div class="chart-box">
+              <h4>📊 Analisis Konversi: Klik, Minat, dan Hasil</h4>
+              <div class="chart-wrap">
+                <canvas id="chart-conversion"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          id="pred-empty"
+          style="text-align: center; padding: 3rem; color: var(--text3)"
+        >
+          <div style="font-size: 3rem; margin-bottom: 0.7rem">🤖</div>
+          <p>Pilih produk untuk melihat prediksi real-time</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ ANALITIK ═══ -->
+    <div class="page" id="page-analytics">
+      <div class="section-header">
+        <div class="section-title" style="font-size: 1.3rem">
+          📊 <span>Analitik</span> Shopee + Search Data
+        </div>
+        <div class="tag">Apr 2025–Apr 2026 · Shopee Indonesia</div>
+      </div>
+      <div class="analytics-grid">
+        <div class="analytics-card">
+          <h3>📈 Penjualan Bulanan Shopee</h3>
+          <div class="chart-full">
+            <canvas id="chart-plat-monthly"></canvas>
+          </div>
+        </div>
+        <div class="analytics-card">
+          <h3>🔍 Token Pencarian per Produk</h3>
+          <div class="chart-med">
+            <canvas id="chart-search-tokens"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="analytics-card" style="margin-bottom: 1.2rem">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 1rem;
+          "
+        >
+          <div>
+            <h3>🔬 Analisis: Pengaruh Pencarian terhadap Prediksi Penjualan</h3>
+            <p
+              style="
+                font-size: 0.78rem;
+                color: var(--text3);
+                margin-top: 0.2rem;
+              "
+            >
+              Grafik kompleks ini membuktikan bahwa
+              <b>semakin banyak produk dicari</b> (hijau), maka
+              <b>prediksi unit terjualnya akan semakin tinggi</b> (merah) secara
+              eksponensial karena dorongan AI Boost Multiplier (biru).
+            </p>
+          </div>
+        </div>
+        <div class="chart-full" style="height: 350px">
+          <canvas id="chart-search-vs-pred"></canvas>
+        </div>
+      </div>
+
+      <div class="analytics-card" style="margin-bottom: 1.2rem">
+        <h3>📋 Tabel Performa — 25 Produk Shopee + Token</h3>
+        <div style="overflow-x: auto">
+          <table class="data-table" id="summary-table"></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PRODUK ═══ -->
+    <div class="page" id="page-products">
+      <div class="section-header">
+        <div class="section-title" style="font-size: 1.3rem">
+          🛍️ Katalog <span>Produk Shopee</span> (25 Item)
+        </div>
+      </div>
+      <div class="filter-bar">
+        <select
+          id="cat-filter"
+          style="
+            padding: 0.35rem 0.7rem;
+            border: 1.5px solid var(--border);
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 0.78rem;
+          "
+          onchange="filterProducts()"
+        >
+          <option value="">Semua Kategori</option>
+        </select>
+      </div>
+      <div class="product-grid" id="all-product-grid"></div>
+    </div>
+
+    <!-- ═══ CHATBOT ═══ -->
+    <div id="chatbot-wrap">
+      <div id="chat-panel">
+        <div class="chat-head">
+          <div class="chat-avatar">🤖</div>
+          <div class="chat-head-info">
+            <h4>YarsiBot AI</h4>
+            <p>● Powered by Gemini · YarsiMart Expert</p>
+          </div>
+          <button class="chat-close" onclick="toggleChat()">✕</button>
+        </div>
+        <div class="chat-msgs" id="chat-msgs">
+          <div class="msg bot">
+            <div class="msg-av">🤖</div>
+            <div class="msg-bubble">
+              Halo! 👋 Saya <b>YarsiBot</b>, asisten AI YarsiMart.<br />Saya
+              terhubung langsung ke <b>Gemini AI</b> dan mengetahui semua data
+              toko ini!<br /><br />Coba tanya saya:<br />💰 Pendapatan &
+              revenue<br />🔍 Produk trending & terlaris<br />🤖 Prediksi
+              penjualan<br />🛍️ Info produk & harga<br /><br /><i
+                style="font-size: 0.75rem; color: #94a3b8"
+                >💡 Saya hanya menjawab topik seputar toko YarsiMart.</i
+              >
+            </div>
+          </div>
+        </div>
+        <div class="chips">
+          <button class="chip" onclick="sendChip(this)">
+            Produk terlaris?
+          </button>
+          <button class="chip" onclick="sendChip(this)">
+            Pendapatan Shopee?
+          </button>
+          <button class="chip" onclick="sendChip(this)">
+            Prediksi mingguan hijab?
+          </button>
+          <button class="chip" onclick="sendChip(this)">
+            Produk paling banyak dicari?
+          </button>
+        </div>
+        <div class="chat-input-row">
+          <input
+            class="chat-input"
+            id="chat-input"
+            placeholder="Tanya seputar toko YarsiMart..."
+            onkeydown="if (event.key === 'Enter') sendMsg();"
+          />
+          <button class="chat-send" onclick="sendMsg()">➤</button>
+        </div>
+      </div>
+      <button class="chat-fab" onclick="toggleChat()">💬</button>
+    </div>
+
+    <!-- ═══ KERANJANG SIDEBAR ═══ -->
+    <button class="cart-fab" onclick="toggleCart()">
+      🛒
+      <div class="cart-badge" id="cart-badge">0</div>
+    </button>
+    <div id="cart-sidebar" class="cart-sidebar">
+      <div class="cart-header">
+        <h3>🛒 Keranjang Belanja</h3>
+        <button onclick="toggleCart()">✕</button>
+      </div>
+      <div class="cart-items" id="cart-items">
+        <p style="text-align: center; color: #999; margin-top: 2rem">
+          Keranjang kosong
+        </p>
+      </div>
+      <div class="cart-footer">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            font-weight: bold;
+            font-size: 1.1rem;
+          "
+        >
+          <span>Total:</span>
+          <span id="cart-total" style="color: var(--primary)">Rp 0</span>
+        </div>
+        <button class="checkout-btn" onclick="checkout()">
+          Checkout Sekarang
+        </button>
+      </div>
+    </div>
+
+    <script src="/static/js/data.js"></script>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>

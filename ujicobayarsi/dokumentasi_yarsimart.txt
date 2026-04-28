@@ -1,0 +1,110 @@
+======================================================================
+DOKUMENTASI SISTEM YARSIMART — E-COMMERCE ANALYTICS & AI PREDICTION
+======================================================================
+Aplikasi: YarsiMart (Shopee Indonesia Analytics)
+Tech Stack: Python (Flask), SQLite, Vanilla JavaScript, Chart.js
+AI Integration: Google Gemini AI (Chatbot)
+
+1. ALUR KERJA SISTEM (WORKFLOW)
+----------------------------------------------------------------------
+YarsiMart adalah dashboard analitik toko online (berbasis data Shopee) 
+yang dilengkapi dengan mesin pencari cerdas dan prediksi AI.
+- [User] mencari produk melalui search bar.
+- [Backend] mencari kecocokan nama dan kategori, lalu merespons dengan hasil.
+- [Database] otomatis mencatat histori pencarian, jumlah kata kunci yang dicari, 
+  dan menambahkan "Token Pencarian" pada produk yang muncul di hasil.
+- [Sistem AI/Statistik] menggunakan histori penjualan Shopee dan 
+  dikombinasikan dengan "Token Pencarian" untuk membuat prediksi harian, 
+  mingguan, dan bulanan menggunakan rumus OLS (Ordinary Least Squares) 
+  dan Seasonal Adjustment.
+- [Chatbot Gemini] membaca data database secara real-time dan memberikan 
+  jawaban interaktif kepada user dengan mode fallback lokal jika kuota AI habis.
+
+2. SKEMA DATABASE (SQLite - yarsimart.db)
+----------------------------------------------------------------------
+Database menggunakan SQLite dengan fitur `PRAGMA journal_mode=WAL` untuk 
+menangani concurrency (penulisan bersamaan).
+
+Tabel 1: `searches` (Menyimpan log kueri pencarian user)
+- id (INTEGER PRIMARY KEY)
+- query (TEXT) -> Kata yang dicari
+- result_count (INTEGER) -> Jumlah produk yang ditemukan
+- created_at (DATETIME)
+
+Tabel 2: `product_tokens` (Menyimpan token popularitas setiap produk)
+- product_id (TEXT PRIMARY KEY) -> ID dari produk
+- tokens (INTEGER) -> Jumlah kali produk ini muncul dari pencarian user
+- search_count (INTEGER) -> Total dicari
+- views (INTEGER) -> Total diklik/dilihat user
+- cart_adds (INTEGER) -> Total dimasukkan ke keranjang
+- sales (INTEGER) -> Total di-checkout/dibeli
+- last_searched (DATETIME)
+
+Tabel 3: `keyword_counts` (Menyimpan statistik kata kunci terpopuler)
+- keyword (TEXT PRIMARY KEY) -> Pecahan kata (misal: "hijab", "kemeja")
+- count (INTEGER) -> Seberapa sering kata ini diketik
+- last_searched (DATETIME)
+
+Tabel 4: `search_product_log` (Relasi pencarian dan produk)
+- id (INTEGER PRIMARY KEY)
+- search_id (INTEGER) -> Relasi ke tabel searches
+- product_id (TEXT) -> Relasi ke produk
+
+3. RUMUS & PERHITUNGAN PREDIKSI PENJUALAN (AI & STATISTIK)
+----------------------------------------------------------------------
+A. Rumus Prediksi Trend Linear (OLS - Ordinary Least Squares)
+Digunakan di frontend (`app.js`) untuk memprediksi arah penjualan:
+- Slope (Kemiringan) = Σ((x - x_mean) * (y - y_mean)) / Σ((x - x_mean)²)
+- Intercept = y_mean - (Slope * x_mean)
+- Hasil Prediksi (Y) = Intercept + (Slope * Waktu_ke_depan)
+
+B. Seasonal Adjustment (Faktor Musiman)
+Prediksi OLS dikalikan dengan bobot bulan/hari tertentu:
+- Contoh: Bulan Ramadhan (Maret-Mei) baju Muslim (Gamis, Koko, Hijab) 
+  dikalikan (multiplier) sebesar 1.9x (naik 90%).
+- Akhir tahun (Desember-Februari) baju hangat/Dress dikalikan 1.22x.
+
+C. Rumus Konversi Interaksi (CTR, ATC, Sales Rate)
+Sistem backend menghitung seberapa efektif sebuah produk:
+- CTR (Click-Through Rate) = (Views / Tokens) * 100%
+- ATC Rate (Add to Cart) = (Cart_adds / Tokens) * 100%
+- Sales Rate = (Sales / Tokens) * 100%
+
+D. Rumus Boost Multiplier (Dampak Pencarian terhadap Prediksi Penjualan)
+Produk yang sering dicari (mendapat Token tinggi) akan mendapatkan Boost
+pada prediksi penjualannya di Backend (`app.py` -> `predict_from_search`):
+- Share Pasar = Token Produk / Total Seluruh Token di DB
+- Base Search Boost = 1.0 + (Share Pasar * 5)
+- Tambahan Boost jika CTR > 5% (+0.5)
+- Tambahan Boost jika ATC Rate > 2% (+1.0)
+- Prediksi Bulanan Akhir = Penjualan Dasar Bulanan * Total Search Boost
+
+4. ALUR KERJA CHATBOT GEMINI AI
+----------------------------------------------------------------------
+1. User mengetik pesan di frontend.
+2. Pesan dikirim ke endpoint `/api/chat` bersama history (maks 8 chat terakhir).
+3. Backend membaca data real-time dari SQLite (Total pencarian, Top keywords, Top produk).
+4. Backend menggabungkan data SQLite + Katalog Produk ke dalam "System Prompt".
+5. Backend mengirim request HTTP ke server Google Gemini menggunakan auth header: 
+   `x-goog-api-key: [API_KEY]` dan mencoba 3 model secara bergantian:
+   - gemini-2.0-flash
+   - gemini-1.5-flash
+   - gemini-flash-latest
+6. Jika Gemini gagal (contoh: kuota habis / Error 429), sistem otomatis memanggil fungsi 
+   `local_fallback_reply()` yang akan membalas pertanyaan secara lokal tanpa API internet, 
+   menganalisis kalimat (seperti kata "terlaris", "mahal", "pendapatan") dan memberikan 
+   jawaban akurat menggunakan logika string matching murni di Python.
+
+5. DAFTAR API ENDPOINT PADA FLASK
+----------------------------------------------------------------------
+- [GET]  /                    : Render halaman utama (index.html)
+- [POST] /api/search          : Mencari produk, mencatat histori ke DB, dan memberikan token.
+- [GET]  /api/trending        : Mengambil top 25 produk dengan Token terbanyak dari SQLite.
+- [GET]  /api/keywords        : Mengambil kata kunci paling banyak diketik user.
+- [POST] /api/action          : Mencatat event 'view', 'cart', atau 'buy' untuk metrik konversi produk.
+- [GET]  /api/stats           : Mengambil rangkuman statistik (Total token, pencarian unik, history terbaru).
+- [GET]  /api/bestsellers     : Mengembalikan array prediksi top 10 produk dengan revenue terbesar bulan depan.
+- [GET]  /api/predict/<pid>   : Mengambil prediksi, konversi, dan AI Boost dari satu produk spesifik.
+- [POST] /api/reset           : Menghapus (TRUNCATE) seluruh data SQLite untuk simulasi ulang.
+- [POST] /api/chat            : Menerima pesan teks, memanggil Google Gemini API, atau menjalankan Fallback Lokal.
+======================================================================
