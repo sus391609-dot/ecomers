@@ -51,7 +51,7 @@ function closeSearchResults(){document.getElementById("search-results").style.di
 // Dashboard Refresh
 async function refreshDashboard(){
   try{
-    const[stats,kw,trend,best]=await Promise.all([apiGet('/api/stats'),apiGet('/api/keywords'),apiGet('/api/trending'),apiGet('/api/bestsellers')]);
+    const[stats,kw,trend,best]=await Promise.all([apiGet('/api/stats'),apiGet('/api/keywords'),apiGet('/api/trending?limit=50'),apiGet('/api/bestsellers?limit=10')]);
     document.getElementById("stat-searches").textContent=fmtN(stats.total_searches);
     document.getElementById("stat-tokens").textContent=fmtN(stats.total_tokens);
     document.getElementById("db-msg").textContent=`${stats.total_searches} pencarian · ${stats.total_tokens} token · ${stats.products_searched}/${stats.total_products||5000} produk dicari`;
@@ -60,6 +60,10 @@ async function refreshDashboard(){
     renderBestsellers(best.bestsellers);
     renderRecent(stats.recent_searches);
     document.getElementById("kw-count-tag").textContent=`Database: ${stats.unique_keywords} kata kunci`;
+    const tt=document.getElementById("trending-tag");
+    if(tt&&trend.day) tt.textContent=`🟢 Real-time Shopee · rotasi harian · ${trend.day} · ${trend.count||0} produk`;
+    const bt=document.getElementById("bestseller-tag");
+    if(bt&&best.day) bt.textContent=`🟢 Real-time Shopee · ${best.day} · Prediksi keranjang aktif`;
   }catch(e){console.error("Dashboard refresh error:",e);}
 }
 
@@ -72,19 +76,24 @@ function renderKeywords(keywords){
 function renderTrending(trending){
   const el=document.getElementById("trending-grid");
   const ranks=["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"];
-  if(!trending||!trending.length){el.innerHTML='<div class="empty-keywords" style="grid-column:1/-1">Belum ada data trending. Cari produk untuk mengisi!</div>';return;}
+  if(!trending||!trending.length){el.innerHTML='<div class="empty-keywords" style="grid-column:1/-1">Belum ada data trending.</div>';return;}
+  // Tampilkan top 10 dari 50 (50 adalah daftar trending hari ini)
   el.innerHTML=trending.slice(0,10).map((t,i)=>{
     const p=PRODUCTS[t.pid];if(!p)return"";
-    return`<div class="trend-card" onclick="openPrediction('${t.pid}')"><div class="trend-rank">${ranks[i]||"#"+(i+1)}</div><div class="trend-icon">${ICONS[p.c]||"🛍️"}</div><div class="trend-name">${p.n}</div><div class="trend-fire">${fmtRp(p.pr)}</div><div class="trend-tokens">🎯 ${t.tokens} token</div><div style="font-size:.6rem;color:var(--text3);margin-top:.2rem">${p.s}</div></div>`;
+    const liveBadge=(t.shopee_live_boost||0)>0?'<span style="font-size:.55rem;color:#16a34a;font-weight:700">🔴 LIVE Shopee</span>':'';
+    const tokInfo=t.tokens?`🎯 ${t.tokens} token`:`📊 Skor ${t.trend_score||0}`;
+    return`<div class="trend-card" onclick="openPrediction('${t.pid}')"><div class="trend-rank">${ranks[i]||"#"+(i+1)}</div><div class="trend-icon">${ICONS[p.c]||"🛍️"}</div><div class="trend-name">${p.n}</div><div class="trend-fire">${fmtRp(p.pr)}</div><div class="trend-tokens">${tokInfo}</div>${liveBadge}<div style="font-size:.6rem;color:var(--text3);margin-top:.2rem">${p.s}</div></div>`;
   }).join("");
 }
 
 function renderBestsellers(bestsellers){
   const el=document.getElementById("bestseller-grid");
-  if(!bestsellers||!bestsellers.length){el.innerHTML='<div class="empty-keywords">Cari produk untuk melihat prediksi terlaris!</div>';return;}
+  if(!bestsellers||!bestsellers.length){el.innerHTML='<div class="empty-keywords">Belum ada data terlaris.</div>';return;}
   el.innerHTML=bestsellers.map(b=>{
     const p=PRODUCTS[b.pid];if(!p)return"";
-    return`<div class="bs-card" onclick="openPrediction('${b.pid}')"><div class="bs-icon">${ICONS[p.c]||"🛍️"}</div><div class="bs-info"><div class="bs-name">${b.name}</div><div class="bs-cat">${b.cat} · ${b.store||p.s} · 🎯 ${b.tokens} token</div><div class="bs-stats"><div class="bs-stat">📅 <b>${b.pred_daily}</b>/hari</div><div class="bs-stat">📆 <b>${b.pred_weekly}</b>/minggu</div><div class="bs-stat">🗓️ <b>${b.pred_monthly}</b>/bulan</div></div></div><div class="bs-pred"><div class="bs-pred-val">${fmtRp(b.est_revenue)}</div><div class="bs-pred-lbl">Est. Revenue/bln</div></div></div>`;
+    const cartLabel=(b.label_prediksi&&b.label_prediksi!=="Normal")?`<span style="font-size:.6rem;color:#dc2626;font-weight:700">🛒 ${b.label_prediksi}</span>`:'';
+    const dailyShopee=b.shopee_daily_est?`Shopee ~<b>${fmtN(b.shopee_daily_est)}</b>/hari`:'';
+    return`<div class="bs-card" onclick="openPrediction('${b.pid}')"><div class="bs-icon">${ICONS[p.c]||"🛍️"}</div><div class="bs-info"><div class="bs-name">${b.name}</div><div class="bs-cat">${b.cat} · ${b.store||p.s} · ${dailyShopee}</div><div class="bs-stats"><div class="bs-stat">📅 <b>${b.pred_daily}</b>/hari</div><div class="bs-stat">📆 <b>${b.pred_weekly}</b>/minggu</div><div class="bs-stat">🗓️ <b>${b.pred_monthly}</b>/bulan</div></div>${cartLabel}</div><div class="bs-pred"><div class="bs-pred-val">${fmtRp(b.est_revenue)}</div><div class="bs-pred-lbl">Est. Revenue/bln</div></div></div>`;
   }).join("");
 }
 
@@ -191,8 +200,9 @@ function renderProductPage(){
 function openPrediction(pid){
   showPage("prediction",document.querySelectorAll("nav button")[1]);
   document.getElementById("pred-select").value=pid;
+  // renderPrediction sendiri sudah mengirim 'view' ke server,
+  // jadi tidak perlu recordAction lagi di sini.
   renderPrediction();
-  recordAction(pid, 'view');
 }
 
 function fillSelect(){
@@ -226,14 +236,22 @@ async function renderPrediction(){
   document.getElementById("pred-empty").style.display="none";
   const p=PRODUCTS[pid];
 
-  // Get predictions from API
+  // Catat klik sebagai 'view' SEBELUM ambil prediksi, supaya angka yang
+  // ditampilkan ke user sudah memasukkan klik mereka sendiri (views bulan ini bertambah).
+  try{ await apiPost('/api/action',{pid,action:'view'}); }catch(e){}
+
+  // Get predictions from API (sudah termasuk current_month_views user)
   let searchPred={tokens:0,search_boost:1,ctr:0,atc_rate:0,sales_rate:0,views:0,cart_adds:0,sales:0};
   try{searchPred=await apiGet(`/api/predict/${pid}`);}catch(e){}
 
-  // Calculate local prediction
-  const lmv=p.lmv||1, lms=p.lms||0, cmv=p.cmv||0;
-  const convRate=lms/lmv;
-  const growthRate=cmv/lmv;
+  // Gunakan angka dari server bila tersedia (sudah augmented dengan aktivitas user)
+  const lmv = (searchPred.last_month_views!=null) ? searchPred.last_month_views : (p.lmv||1);
+  const lms = (searchPred.last_month_sales!=null) ? searchPred.last_month_sales : (p.lms||0);
+  const cmv = (searchPred.current_month_views!=null) ? searchPred.current_month_views : (p.cmv||0);
+  const cmvBase = (searchPred.current_month_views_base!=null) ? searchPred.current_month_views_base : (p.cmv||0);
+  const cmvUser = (searchPred.current_month_views_user!=null) ? searchPred.current_month_views_user : 0;
+  const convRate=lms/Math.max(1,lmv);
+  const growthRate=cmv/Math.max(1,lmv);
   const growthPct=((growthRate-1)*100).toFixed(1);
   const predSales=Math.max(0,Math.round(lms*growthRate));
   const predDaily=Math.max(0,Math.round(predSales/30));
@@ -250,7 +268,7 @@ async function renderPrediction(){
   // Prediction cards
   document.getElementById("pred-cards").innerHTML=`
     <div class="pred-card" style="background:linear-gradient(135deg,#e0f2fe,#fff)"><div class="ico">📊</div><div class="period">Views Bulan Lalu</div><div class="qty">${fmtN(lmv)}</div><div class="unit">Total pencarian/views</div><div class="conf-bar"><div class="conf-fill" style="width:100%;background:#0ea5e9"></div></div><div class="conf-txt">Konversi: ${(convRate*100).toFixed(2)}%</div></div>
-    <div class="pred-card" style="background:linear-gradient(135deg,#dcfce7,#fff)"><div class="ico">📈</div><div class="period">Views Bulan Ini</div><div class="qty">${fmtN(cmv)}</div><div class="unit" style="color:${trendColor};font-weight:700">${growthPct>0?"+":""}${growthPct}% ${trendLabel}</div><div class="conf-bar"><div class="conf-fill" style="width:${Math.min(100,Math.abs(growthPct))}%;background:${trendColor}"></div></div><div class="conf-txt">Pertumbuhan real-time</div></div>
+    <div class="pred-card" style="background:linear-gradient(135deg,#dcfce7,#fff)"><div class="ico">📈</div><div class="period">Views Bulan Ini</div><div class="qty">${fmtN(cmv)}</div><div class="unit" style="color:${trendColor};font-weight:700">${growthPct>0?"+":""}${growthPct}% ${trendLabel}</div><div class="conf-bar"><div class="conf-fill" style="width:${Math.min(100,Math.abs(growthPct))}%;background:${trendColor}"></div></div><div class="conf-txt">Base ${fmtN(cmvBase)} + Aktivitas Anda <b>${fmtN(cmvUser)}</b></div></div>
     <div class="pred-card" style="background:linear-gradient(135deg,#fef08a,#fff)"><div class="ico">🔮</div><div class="period">Prediksi Terjual Bulan Ini</div><div class="qty" style="color:${trendColor}">${fmtN(predSales)}</div><div class="unit">unit (dari ${fmtN(lms)} bulan lalu)</div><div class="conf-bar"><div class="conf-fill" style="width:${Math.min(100,(convRate*100)*10)}%;background:#eab308"></div></div><div class="conf-txt">Est. Revenue: ${fmtRp(predRevenue)}</div></div>`;
 
   // Revenue prediction detail

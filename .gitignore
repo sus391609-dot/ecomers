@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.shopee_cache/
+ujicobayarsi/.shopee_cache/
+ujicobayarsi/yarsimart.db-wal
+ujicobayarsi/yarsimart.db-shm
