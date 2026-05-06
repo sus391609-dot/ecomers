@@ -232,44 +232,45 @@
       </div>
     </div>
 
-    <!-- ═══ KERANJANG (Admin Cart Analytics) ═══ -->
+    <!-- ═══ KERANJANG (Admin User Activity Analytics) ═══ -->
     <div class="page" id="page-cart">
       <div class="section-header">
         <div>
-          <div class="section-title" style="font-size:1.3rem">🛒 Analitik <span>Keranjang</span> — Live</div>
+          <div class="section-title" style="font-size:1.3rem">🛒 Analitik <span>Aktivitas User</span> — Live</div>
           <p style="font-size:.78rem;color:var(--text3);margin-top:.25rem">
-            Persentase add-to-cart dari Shopee + tambahan real-time setiap kali user lokal menambah ke keranjang.
-            <b>Saat user di sisi pengguna mengklik 🛒 Keranjang, angka di sini ikut bertambah.</b>
+            Semua angka di sini langsung dari aksi pengguna di <b>/user</b> (tanpa baseline Shopee).
+            Setiap user mencari, melihat, memasukkan keranjang, atau membeli — angka di bawah otomatis bertambah.
           </p>
         </div>
-        <div class="tag" id="cart-live-tag">🟢 Real-time · Sumber Shopee + Lokal</div>
+        <div class="tag" id="cart-live-tag">🟢 Real-time · Sumber: aksi user</div>
       </div>
 
-      <!-- KPI Keranjang -->
+      <!-- KPI Aktivitas User (4 kartu) -->
       <div class="kpi-grid" id="cart-kpi-grid"></div>
 
       <!-- Aktivitas terbaru -->
       <div class="analytics-card" style="margin-bottom:1.2rem">
-        <h3>⏱️ Aktivitas Keranjang Terbaru (Live dari Pengguna)</h3>
+        <h3>⏱️ Aktivitas Terbaru (Live dari Pengguna)</h3>
         <p style="font-size:.75rem;color:var(--text3);margin-bottom:.8rem">
-          Daftar produk terbaru yang dimasukkan keranjang oleh pengguna. Auto-refresh tiap 10 detik.
+          Daftar aksi terbaru pengguna: 🛒 keranjang dan 💳 beli. Auto-refresh tiap 10 detik.
         </p>
         <div class="analytics-table-wrap" style="max-height:340px">
           <table class="data-table" id="cart-recent-table">
             <tbody>
               <tr>
-                <td colspan="6" style="text-align:center;color:var(--text3)">Memuat data keranjang real-time...</td>
+                <td colspan="6" style="text-align:center;color:var(--text3)">Memuat data aktivitas real-time...</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Top produk dengan keranjang terbanyak -->
+      <!-- Top produk dengan aktivitas user terbanyak -->
       <div class="analytics-card" style="margin-bottom:1.2rem">
-        <h3>📦 Top Produk dengan Keranjang Terbanyak</h3>
+        <h3>📦 Top Produk dengan Aktivitas User Terbanyak</h3>
         <p style="font-size:.75rem;color:var(--text3);margin-bottom:.8rem">
-          Total = baseline Shopee (fiktif, deterministik per produk) + tambahan real-time dari user lokal.
+          Diurutkan dari produk yang paling sering dimasukkan keranjang & dibeli oleh pengguna.
+          <b>Hanya produk dengan aktivitas user yang ditampilkan.</b>
         </p>
         <div class="analytics-table-wrap">
           <table class="data-table" id="cart-top-table">
@@ -280,15 +281,6 @@
             </tbody>
           </table>
         </div>
-      </div>
-
-      <!-- Cart rate per kategori -->
-      <div class="analytics-card" style="margin-bottom:1.2rem">
-        <h3>📊 Persentase Add-to-Cart Shopee per Kategori</h3>
-        <p style="font-size:.75rem;color:var(--text3);margin-bottom:.8rem">
-          Estimasi rate keranjang dari Shopee (rotasi harian). Range realistis 2.5% - 9% sesuai pola Shopee Indonesia.
-        </p>
-        <div class="chart-full" style="height:340px"><canvas id="chart-cart-cat-rate"></canvas></div>
       </div>
     </div>
 

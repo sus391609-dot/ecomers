@@ -638,44 +638,64 @@ async function renderCartAnalytics(){
   try{
     const[stats,recent]=await Promise.all([
       apiGet('/api/cart_stats?limit=20'),
-      apiGet('/api/cart_recent?limit=30')
+      apiGet('/api/cart_recent?limit=30')   // semua aksi (cart + buy)
     ]);
     renderCartKPI(stats.overall||{});
     renderCartRecentTable(recent.recent||[]);
     renderCartTopTable(stats.top_products||[]);
-    renderCartCatChart(stats.category_cart_rate||[]);
     const liveTag=document.getElementById("cart-live-tag");
-    if(liveTag)liveTag.textContent=`🟢 Real-time · ${stats.day||""} · ${stats.source||"shopee+local"}`;
+    if(liveTag)liveTag.textContent=`🟢 Real-time · ${stats.day||""} · ${stats.source||"user_actions"}`;
   }catch(e){console.error("renderCartAnalytics error:",e);}
 }
 
 function renderCartKPI(o){
   const el=document.getElementById("cart-kpi-grid");
   if(!el)return;
+  // 4 KPI baru — semua dari aktivitas user real-time
   el.innerHTML=`
-    <div class="kpi-card"><div class="kpi-label">🛒 Total Keranjang (Shopee + User)</div><div class="kpi-val" style="color:var(--primary)">${fmtN(o.total_cart_combined||0)}</div><div class="kpi-badge up">Combined live</div></div>
-    <div class="kpi-card"><div class="kpi-label">📊 Cart Rate Total</div><div class="kpi-val" style="color:#22c55e">${(o.overall_cart_rate||0).toFixed(2)}%</div><div class="kpi-badge up">cart / views</div></div>
-    <div class="kpi-card"><div class="kpi-label">📦 Shopee Avg Cart Rate</div><div class="kpi-val" style="font-size:1rem">${(o.shopee_avg_cart_rate||0).toFixed(2)}%</div><div class="kpi-badge up">Rotasi harian Shopee</div></div>
-    <div class="kpi-card"><div class="kpi-label">🟢 Tambahan Live (User)</div><div class="kpi-val" style="color:#0ea5e9">${fmtN(o.total_cart_user||0)}</div><div class="kpi-badge up">+${fmtN(o.recent_24h||0)} dalam 24j · +${fmtN(o.recent_1h||0)} dalam 1j</div></div>`;
+    <div class="kpi-card">
+      <div class="kpi-label">🛒 Total Masukan Keranjang (User)</div>
+      <div class="kpi-val" style="color:var(--primary)">${fmtN(o.total_cart_user||0)}</div>
+      <div class="kpi-badge up">+${fmtN(o.cart_24h||0)} / 24j · +${fmtN(o.cart_1h||0)} / 1j</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">👁️ Total Views (User)</div>
+      <div class="kpi-val" style="color:#0ea5e9">${fmtN(o.total_views_user||0)}</div>
+      <div class="kpi-badge up">Cart Rate ${(o.cart_rate_user||0).toFixed(2)}%</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">🔍 Total Pencarian (User)</div>
+      <div class="kpi-val" style="color:#a855f7">${fmtN(o.total_searches_user||0)}</div>
+      <div class="kpi-badge up">+${fmtN(o.search_24h||0)} / 24j · +${fmtN(o.search_1h||0)} / 1j</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">💳 Total Penjualan (User)</div>
+      <div class="kpi-val" style="color:#16a34a">${fmtN(o.total_sales_user||0)}</div>
+      <div class="kpi-badge up">+${fmtN(o.buy_24h||0)} / 24j · +${fmtN(o.buy_1h||0)} / 1j · Buy Rate ${(o.buy_rate_user||0).toFixed(2)}%</div>
+    </div>`;
 }
 
 function renderCartRecentTable(rows){
   const tbl=document.getElementById("cart-recent-table");
   if(!tbl)return;
   if(!rows.length){
-    tbl.innerHTML='<tbody><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:1.5rem">Belum ada user yang menambah ke keranjang. Begitu user menambah, daftar akan muncul real-time di sini.</td></tr></tbody>';
+    tbl.innerHTML='<tbody><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:1.5rem">Belum ada aktivitas user. Begitu user di /user mencari, masukan keranjang, atau beli — daftar muncul di sini.</td></tr></tbody>';
     return;
   }
-  let html=`<thead><tr><th>#</th><th>Waktu</th><th>Pengguna</th><th>Produk</th><th>Kategori · Toko</th><th>Qty · Harga</th></tr></thead><tbody>`;
+  let html=`<thead><tr><th>#</th><th>Waktu</th><th>Pengguna</th><th>Aksi</th><th>Produk · Kategori · Toko</th><th>Qty · Harga</th></tr></thead><tbody>`;
   rows.forEach((r,i)=>{
     const t=r.created_at?new Date((r.created_at.indexOf("T")>=0?r.created_at:r.created_at.replace(" ","T")+"Z")).toLocaleTimeString("id-ID"):"-";
+    const isBuy=r.action==='buy';
+    const actionBadge=isBuy
+      ?'<span class="kpi-badge" style="background:#dcfce7;color:#166534">💳 BELI</span>'
+      :'<span class="kpi-badge" style="background:#fef3c7;color:#92400e">🛒 KERANJANG</span>';
     html+=`<tr>
       <td>${i+1}</td>
       <td><b>${t}</b></td>
       <td>👤 <b>${r.username||"(tamu)"}</b></td>
-      <td><b style="color:var(--primary)">${ICONS[r.cat]||"🛍️"} ${r.name}</b></td>
-      <td>${r.cat} · ${r.store}</td>
-      <td><b>${r.qty}</b> × ${fmtRp(r.price)} = <b style="color:#16a34a">${fmtRp((r.price||0)*(r.qty||1))}</b></td>
+      <td>${actionBadge}</td>
+      <td><b style="color:var(--primary)">${ICONS[r.cat]||"🛍️"} ${r.name}</b><div style="font-size:.7rem;color:var(--text3)">${r.cat} · ${r.store}</div></td>
+      <td><b>${r.qty}</b> × ${fmtRp(r.price)} = <b style="color:${isBuy?'#16a34a':'#0ea5e9'}">${fmtRp((r.price||0)*(r.qty||1))}</b></td>
     </tr>`;
   });
   html+='</tbody>';
@@ -685,37 +705,22 @@ function renderCartRecentTable(rows){
 function renderCartTopTable(rows){
   const tbl=document.getElementById("cart-top-table");
   if(!tbl)return;
-  if(!rows.length){tbl.innerHTML='<tbody><tr><td colspan="8" style="text-align:center;color:var(--text3)">Tidak ada data.</td></tr></tbody>';return;}
-  let html=`<thead><tr><th>#</th><th>Produk</th><th>Kategori</th><th>Toko</th><th>Cart Shopee</th><th>Cart User (Live)</th><th>Total Cart</th><th>Cart Rate</th></tr></thead><tbody>`;
+  if(!rows.length){tbl.innerHTML='<tbody><tr><td colspan="8" style="text-align:center;color:var(--text3);padding:1.5rem">Belum ada produk dengan aktivitas user. Setelah user mencari, klik, atau membeli — produk akan muncul di sini.</td></tr></tbody>';return;}
+  let html=`<thead><tr><th>#</th><th>Produk</th><th>Kategori · Toko</th><th>👁️ Views</th><th>🛒 Cart</th><th>💳 Beli</th><th>Cart Rate</th><th>Buy Rate</th></tr></thead><tbody>`;
   rows.slice(0,20).forEach((r,i)=>{
     html+=`<tr>
       <td>${i+1}</td>
       <td><b>${ICONS[r.cat]||"🛍️"} ${r.name}</b></td>
-      <td>${r.cat}</td>
-      <td>${r.store}</td>
-      <td>${fmtN(r.cart_base)}</td>
-      <td><b style="color:#0ea5e9">${fmtN(r.cart_user)}</b></td>
-      <td style="font-weight:700;color:var(--primary)">${fmtN(r.cart_total)}</td>
+      <td>${r.cat} · ${r.store}</td>
+      <td><b style="color:#0ea5e9">${fmtN(r.views_user||0)}</b></td>
+      <td><b style="color:#f59e0b">${fmtN(r.cart_user||0)}</b></td>
+      <td><b style="color:#16a34a">${fmtN(r.sales_user||0)}</b></td>
       <td><span class="kpi-badge ${r.cart_rate>=4?"up":"down"}">${r.cart_rate}%</span></td>
+      <td><span class="kpi-badge ${r.buy_rate>=2?"up":"down"}">${r.buy_rate}%</span></td>
     </tr>`;
   });
   html+='</tbody>';
   tbl.innerHTML=html;
-}
-
-function renderCartCatChart(catRates){
-  if(!catRates||!catRates.length)return;
-  dc("cartCatRate");
-  const top=catRates.slice(0,20);
-  charts["cartCatRate"]=new Chart(document.getElementById("chart-cart-cat-rate"),{
-    type:"bar",
-    data:{
-      labels:top.map(c=>c.cat),
-      datasets:[{label:"Cart Rate Shopee (%)",data:top.map(c=>c.shopee_cart_rate_pct),backgroundColor:"rgba(238,77,45,0.7)",borderRadius:4}]
-    },
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-      scales:{y:{beginAtZero:true,ticks:{callback:v=>v+"%"}},x:{ticks:{maxRotation:45,font:{size:9}}}}}
-  });
 }
 
 // ══════════════════════════════════════════════
@@ -798,7 +803,63 @@ function injectCartDataIntoPrediction(searchPred){
   else host.insertAdjacentHTML("afterbegin",block);
 }
 
-// Patch renderPrediction untuk juga menampilkan cart data:
+// ══════════════════════════════════════════════
+// Tampilkan rumus prediksi + breakdown kontribusi user
+// (views_bulan_kemarin / penjualan_bulan_kemarin = rasio)
+// ══════════════════════════════════════════════
+function injectFormulaIntoPrediction(sp){
+  const host=document.getElementById("rev-pred");
+  if(!host)return;
+  const existing=document.getElementById("formula-pred-block");
+  const lmv=sp.last_month_views||0;
+  const lms=sp.last_month_sales||0;
+  const ratio=sp.views_per_sale_ratio||1;
+  const cw=sp.cart_token_weight||1;
+  const bw=sp.buy_token_weight||1;
+  const br=sp.user_breakdown||{clicks:0,carts:0,buys:0,view_token:0,cart_token:0,buy_token:0,total_token:0};
+  const cmvUser=sp.current_month_views_user||br.total_token||0;
+  const cmvBase=sp.current_month_views_base||0;
+  const cmv=sp.current_month_views||(cmvBase+cmvUser);
+  const ps=sp.predicted_sales||0;
+  const block=`
+    <div id="formula-pred-block" style="background:linear-gradient(135deg,#eef2ff 0%,#f5f3ff 100%);border:1.5px solid #c7d2fe;border-radius:14px;padding:1rem;margin-bottom:1rem">
+      <h4 style="font-size:.92rem;margin-bottom:.7rem;color:#4338ca;display:flex;align-items:center;gap:.4rem">
+        🧮 Rumus Prediksi <span style="font-size:.6rem;background:#4338ca;color:#fff;padding:2px 6px;border-radius:99px">LIVE</span>
+      </h4>
+      <div style="background:#fff;border-radius:10px;padding:.7rem;margin-bottom:.7rem;font-family:'Space Grotesk',monospace;font-size:.78rem;line-height:1.7;color:#1f2937">
+        <div><b style="color:#4338ca">Rasio Bulan Kemarin</b> = views_lalu / beli_lalu = <b>${fmtN(lmv)}</b> / <b>${fmtN(lms)}</b> = <b style="color:#dc2626">${fmtN(ratio)}</b> views per 1 beli</div>
+        <div style="margin-top:.3rem"><b style="color:#4338ca">Bobot Token</b> · view = +1 · cart = +${fmtN(cw)} · <b>buy = +${fmtN(bw)}</b></div>
+        <div style="margin-top:.3rem"><b style="color:#4338ca">Views Bulan Ini</b> = baseline (<b>${fmtN(cmvBase)}</b>) + aktivitas user (<b>${fmtN(cmvUser)}</b>) = <b style="color:#16a34a">${fmtN(cmv)}</b></div>
+        <div style="margin-top:.3rem"><b style="color:#4338ca">Prediksi Beli</b> = beli_lalu × (views_skrg / views_lalu) = <b>${fmtN(lms)}</b> × (${fmtN(cmv)} / ${fmtN(lmv)}) = <b style="color:#dc2626;font-size:.95rem">${fmtN(ps)}</b> unit</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem">
+        <div style="background:#fff;border:1px solid #c7d2fe;border-radius:10px;padding:.55rem;text-align:center">
+          <div style="font-size:.62rem;color:var(--text3)">👁 KLIK USER</div>
+          <div style="font-size:1rem;font-weight:800;color:#0ea5e9;font-family:'Space Grotesk'">${fmtN(br.clicks)}</div>
+          <div style="font-size:.58rem;color:var(--text3)">+${fmtN(br.view_token)} token</div>
+        </div>
+        <div style="background:#fff;border:1px solid #c7d2fe;border-radius:10px;padding:.55rem;text-align:center">
+          <div style="font-size:.62rem;color:var(--text3)">🛒 CART USER</div>
+          <div style="font-size:1rem;font-weight:800;color:#f59e0b;font-family:'Space Grotesk'">${fmtN(br.carts)}</div>
+          <div style="font-size:.58rem;color:var(--text3)">+${fmtN(br.cart_token)} token</div>
+        </div>
+        <div style="background:#fff;border:1px solid #c7d2fe;border-radius:10px;padding:.55rem;text-align:center">
+          <div style="font-size:.62rem;color:var(--text3)">💳 BELI USER</div>
+          <div style="font-size:1rem;font-weight:800;color:#16a34a;font-family:'Space Grotesk'">${fmtN(br.buys)}</div>
+          <div style="font-size:.58rem;color:var(--text3)">+${fmtN(br.buy_token)} token</div>
+        </div>
+        <div style="background:linear-gradient(135deg,#4338ca,#7c3aed);color:#fff;border-radius:10px;padding:.55rem;text-align:center">
+          <div style="font-size:.62rem;opacity:.85">Σ TOKEN USER</div>
+          <div style="font-size:1.1rem;font-weight:800;font-family:'Space Grotesk'">${fmtN(br.total_token)}</div>
+          <div style="font-size:.58rem;opacity:.85">→ views token</div>
+        </div>
+      </div>
+    </div>`;
+  if(existing)existing.outerHTML=block;
+  else host.insertAdjacentHTML("afterbegin",block);
+}
+
+// Patch renderPrediction untuk juga menampilkan formula + cart data:
 const _origRenderPrediction=renderPrediction;
 renderPrediction=async function patchedRenderPrediction(){
   await _origRenderPrediction.apply(this,arguments);
@@ -806,9 +867,23 @@ renderPrediction=async function patchedRenderPrediction(){
   if(!pid)return;
   try{
     const sp=await apiGet(`/api/predict/${pid}`);
+    injectFormulaIntoPrediction(sp||{});
     injectCartDataIntoPrediction(sp||{});
   }catch(e){}
 };
+
+// Auto-refresh prediksi tiap 5 detik supaya admin lihat perubahan real-time dari user
+let _predRefreshTimer=null;
+function startPredictionAutoRefresh(){
+  if(_predRefreshTimer)clearInterval(_predRefreshTimer);
+  _predRefreshTimer=setInterval(()=>{
+    const page=document.getElementById("page-prediction");
+    if(!page||!page.classList.contains("active"))return;
+    const pid=document.getElementById("pred-select")?.value;
+    if(!pid)return;
+    renderPrediction();
+  },5000);
+}
 
 // Init
 window.addEventListener("load",()=>{
@@ -818,5 +893,6 @@ window.addEventListener("load",()=>{
   refreshDashboard();
   loadAdminProfile();
   startCartAnalyticsAutoRefresh();
+  startPredictionAutoRefresh();
   setInterval(refreshDashboard,15000);
 });

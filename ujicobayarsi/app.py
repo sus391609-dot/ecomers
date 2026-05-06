@@ -153,12 +153,18 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_cart_log_pid ON cart_log(product_id);
         CREATE INDEX IF NOT EXISTS idx_cart_log_created ON cart_log(created_at);
     """)
-    # Migrasi: pastikan kolom month_views & last_month_key ada walau DB lama
+    # Migrasi: pastikan kolom counters bulanan ada walau DB lama
     cols = {row[1] for row in conn.execute("PRAGMA table_info(product_tokens)").fetchall()}
     if "month_views" not in cols:
         conn.execute("ALTER TABLE product_tokens ADD COLUMN month_views INTEGER DEFAULT 0")
     if "last_month_key" not in cols:
         conn.execute("ALTER TABLE product_tokens ADD COLUMN last_month_key TEXT")
+    if "month_clicks" not in cols:
+        conn.execute("ALTER TABLE product_tokens ADD COLUMN month_clicks INTEGER DEFAULT 0")
+    if "month_carts" not in cols:
+        conn.execute("ALTER TABLE product_tokens ADD COLUMN month_carts INTEGER DEFAULT 0")
+    if "month_buys" not in cols:
+        conn.execute("ALTER TABLE product_tokens ADD COLUMN month_buys INTEGER DEFAULT 0")
     for pid in PRODUCTS:
         conn.execute(
             "INSERT OR IGNORE INTO product_tokens (product_id, tokens, search_count, views, cart_adds, sales) VALUES (?, 0, 0, 0, 0, 0)",
@@ -213,6 +219,32 @@ def _month_key():
     return date.today().strftime("%Y-%m")
 
 
+def _views_per_sale_ratio(pid):
+    """Rasio views_bulan_lalu / penjualan_bulan_lalu untuk produk.
+
+    Ini adalah "konversi terbalik" — rata-rata berapa views yang dibutuhkan
+    untuk menghasilkan 1 penjualan di bulan kemarin. Rasio ini dipakai sebagai
+    bobot dinamis ketika user beraksi:
+      • klik view  → token views += 1
+      • add to cart → token views += round(ratio × 0.5)  (sinyal niat beli)
+      • klik beli   → token views += round(ratio)        (sinyal terkuat)
+    """
+    p = PRODUCTS.get(pid)
+    if not p:
+        return 1
+    lmv = max(1, int(p.get("last_month_views") or 1))
+    lms = max(1, int(p.get("last_month_sales") or 1))
+    return max(1, lmv // lms)
+
+
+def _cart_token_weight(pid):
+    return max(1, _views_per_sale_ratio(pid) // 2)
+
+
+def _buy_token_weight(pid):
+    return max(1, _views_per_sale_ratio(pid))
+
+
 def _get_month_views(pid, conn=None):
     """Ambil month_views untuk produk; reset jika bulan sudah ganti."""
     own_conn = False
@@ -227,9 +259,12 @@ def _get_month_views(pid, conn=None):
     mv = 0
     if cur:
         if cur["last_month_key"] != mk:
-            # Reset counter saat bulan ganti
+            # Reset counter bulanan saat bulan ganti
             conn.execute(
-                "UPDATE product_tokens SET month_views=0, last_month_key=? WHERE product_id=?",
+                """UPDATE product_tokens SET
+                    month_views=0, month_clicks=0, month_carts=0, month_buys=0,
+                    last_month_key=?
+                   WHERE product_id=?""",
                 (mk, pid),
             )
             conn.commit()
@@ -239,6 +274,46 @@ def _get_month_views(pid, conn=None):
     if own_conn:
         conn.close()
     return mv
+
+
+def _get_month_breakdown(pid, conn=None):
+    """Pecahan kontribusi user lokal ke views token bulan ini.
+
+    Returns dict: {clicks, carts, buys, cart_token, buy_token, view_token, total_token}.
+    """
+    own_conn = False
+    if conn is None:
+        conn = get_db()
+        own_conn = True
+    cur = conn.execute(
+        """SELECT month_views, month_clicks, month_carts, month_buys, last_month_key
+           FROM product_tokens WHERE product_id=?""",
+        (pid,),
+    ).fetchone()
+    mk = _month_key()
+    if not cur or cur["last_month_key"] != mk:
+        clicks = carts = buys = mv = 0
+    else:
+        clicks = cur["month_clicks"] or 0
+        carts = cur["month_carts"] or 0
+        buys = cur["month_buys"] or 0
+        mv = cur["month_views"] or 0
+    cw = _cart_token_weight(pid)
+    bw = _buy_token_weight(pid)
+    out = {
+        "clicks": clicks,
+        "carts": carts,
+        "buys": buys,
+        "cart_weight": cw,
+        "buy_weight": bw,
+        "view_token": clicks,
+        "cart_token": carts * cw,
+        "buy_token": buys * bw,
+        "total_token": mv,
+    }
+    if own_conn:
+        conn.close()
+    return out
 
 
 def _bump_month_views(pid, delta=1, conn=None):
@@ -316,6 +391,11 @@ def predict_product(pid, month_views_override=None):
         trend_label = "Sangat Menurun"
         trend_color = "#dc2626"
 
+    breakdown = _get_month_breakdown(pid)
+    ratio = _views_per_sale_ratio(pid)
+    cart_weight = _cart_token_weight(pid)
+    buy_weight = _buy_token_weight(pid)
+
     return {
         "pid": pid,
         "name": p["name"],
@@ -340,6 +420,11 @@ def predict_product(pid, month_views_override=None):
         "sp_qty": p["sp_qty"],
         "sp_rev": p["sp_rev"],
         "rating": p.get("rating", 4.5),
+        # Rasio views:beli & breakdown kontribusi user (untuk tampilan AI)
+        "views_per_sale_ratio": ratio,
+        "cart_token_weight": cart_weight,
+        "buy_token_weight": buy_weight,
+        "user_breakdown": breakdown,
     }
 
 def predict_from_search(pid, total_tokens):
@@ -608,6 +693,14 @@ def api_keywords():
 
 @app.route('/api/action', methods=['POST'])
 def api_action():
+    """Catat aksi user (view/cart/buy) → update token views prediksi.
+
+    Bobot dinamis berdasar rasio views:beli bulan kemarin (per produk):
+      • view:  views_token += 1                      (klik produk)
+      • cart:  views_token += round(ratio × 0.5) × qty   (sinyal niat beli)
+      • buy:   views_token += round(ratio) × qty         (sinyal terkuat)
+    Per-action counter (clicks/carts/buys) bulan ini juga ditrack untuk UI.
+    """
     data = request.json or {}
     pid = data.get('pid')
     action = data.get('action')
@@ -617,39 +710,53 @@ def api_action():
     user = current_user() or {}
     uid = user.get("id")
     uname = user.get("username")
+
     conn = get_db()
     mk = _month_key()
+
+    # Reset counter bulanan dulu jika bulan ganti.
+    _get_month_views(pid, conn=conn)
+
+    cart_weight = _cart_token_weight(pid)
+    buy_weight = _buy_token_weight(pid)
+    weight_added = 0
+
     if action == 'view':
+        weight_added = 1
         conn.execute(
             """UPDATE product_tokens SET
                 views = views + 1,
-                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 1 ELSE 1 END,
+                month_clicks = COALESCE(month_clicks,0) + 1,
+                month_views = COALESCE(month_views,0) + 1,
                 last_month_key = ?
                WHERE product_id=?""",
-            (mk, mk, pid),
+            (mk, pid),
         )
     elif action == 'cart':
-        # Cart juga dianggap sinyal kuat → month_views +2
+        weight_added = cart_weight * qty
         conn.execute(
             """UPDATE product_tokens SET
                 cart_adds = cart_adds + ?,
-                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 2 ELSE 2 END,
+                month_carts = COALESCE(month_carts,0) + ?,
+                month_views = COALESCE(month_views,0) + ?,
                 last_month_key = ?
                WHERE product_id=?""",
-            (qty, mk, mk, pid),
+            (qty, qty, weight_added, mk, pid),
         )
         conn.execute(
             "INSERT INTO cart_log (product_id, user_id, username, qty, action) VALUES (?, ?, ?, ?, 'add')",
             (pid, uid, uname, qty),
         )
     elif action == 'buy':
+        weight_added = buy_weight * qty
         conn.execute(
             """UPDATE product_tokens SET
                 sales = sales + ?,
-                month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 3 ELSE 3 END,
+                month_buys = COALESCE(month_buys,0) + ?,
+                month_views = COALESCE(month_views,0) + ?,
                 last_month_key = ?
                WHERE product_id=?""",
-            (qty, mk, mk, pid),
+            (qty, qty, weight_added, mk, pid),
         )
         conn.execute(
             "INSERT INTO cart_log (product_id, user_id, username, qty, action) VALUES (?, ?, ?, ?, 'buy')",
@@ -657,7 +764,16 @@ def api_action():
         )
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "message": f"{action} recorded", "qty": qty})
+
+    return jsonify({
+        "success": True,
+        "message": f"{action} recorded",
+        "qty": qty,
+        "views_token_added": weight_added,
+        "ratio": _views_per_sale_ratio(pid),
+        "cart_weight": cart_weight,
+        "buy_weight": buy_weight,
+    })
 
 @app.route('/api/stats')
 def api_stats():
@@ -894,99 +1010,138 @@ def _shopee_baseline_cart_count(pid: str) -> int:
 def api_cart_stats():
     """Statistik keranjang real-time (untuk halaman admin "Keranjang").
 
-    Kombinasi:
-      - Baseline fiktif Shopee per produk (deterministik).
-      - Real-time tambahan dari user lokal (cart_log + product_tokens.cart_adds).
-      - Persentase add-to-cart Shopee real-time (live boost) bila tersedia.
+    SEMUA angka di sini adalah aksi terbaru dari **user lokal** (bukan baseline
+    Shopee). Jadi tab Keranjang admin = monitor live aktivitas user di /user.
 
-    Setiap kali user lokal menambah ke keranjang → angka ini bertambah.
+    Sumber:
+      - product_tokens (search_count, views, cart_adds, sales) → kumulatif per produk
+      - cart_log (action='add'|'buy') → log waktu untuk window 24j / 1j
+      - searches → log query pencarian user
     """
     top_n = int(request.args.get('limit', 20))
     conn = get_db()
     rows = conn.execute(
-        "SELECT product_id, cart_adds, views, sales FROM product_tokens"
+        "SELECT product_id, search_count, views, cart_adds, sales,"
+        " month_views, month_clicks, month_carts, month_buys"
+        " FROM product_tokens"
     ).fetchall()
     total_cart_user = sum((r["cart_adds"] or 0) for r in rows)
     total_views_user = sum((r["views"] or 0) for r in rows)
     total_sales_user = sum((r["sales"] or 0) for r in rows)
-    cart_map = {r["product_id"]: (r["cart_adds"] or 0, r["views"] or 0, r["sales"] or 0) for r in rows}
-    recent_count_24h = conn.execute(
+    cart_map = {
+        r["product_id"]: {
+            "cart_user": r["cart_adds"] or 0,
+            "views_user": r["views"] or 0,
+            "sales_user": r["sales"] or 0,
+            "search_count": r["search_count"] or 0,
+            "month_views": r["month_views"] or 0,
+            "month_clicks": r["month_clicks"] or 0,
+            "month_carts": r["month_carts"] or 0,
+            "month_buys": r["month_buys"] or 0,
+        }
+        for r in rows
+    }
+    # Total pencarian user dari tabel searches
+    total_searches = conn.execute(
+        "SELECT COUNT(*) as c FROM searches"
+    ).fetchone()["c"]
+    # Window terbaru
+    cart_24h = conn.execute(
         "SELECT COUNT(*) as c FROM cart_log WHERE action='add' AND datetime(created_at) >= datetime('now', '-1 day')"
     ).fetchone()["c"]
-    recent_count_1h = conn.execute(
+    cart_1h = conn.execute(
         "SELECT COUNT(*) as c FROM cart_log WHERE action='add' AND datetime(created_at) >= datetime('now', '-1 hour')"
     ).fetchone()["c"]
-    # Per-product details
+    buy_24h = conn.execute(
+        "SELECT COUNT(*) as c FROM cart_log WHERE action='buy' AND datetime(created_at) >= datetime('now', '-1 day')"
+    ).fetchone()["c"]
+    buy_1h = conn.execute(
+        "SELECT COUNT(*) as c FROM cart_log WHERE action='buy' AND datetime(created_at) >= datetime('now', '-1 hour')"
+    ).fetchone()["c"]
+    search_24h = conn.execute(
+        "SELECT COUNT(*) as c FROM searches WHERE datetime(created_at) >= datetime('now', '-1 day')"
+    ).fetchone()["c"]
+    search_1h = conn.execute(
+        "SELECT COUNT(*) as c FROM searches WHERE datetime(created_at) >= datetime('now', '-1 hour')"
+    ).fetchone()["c"]
+    # Per-product user-only (untuk tabel Top Produk berdasarkan aktivitas user)
     items = []
-    total_cart_combined = 0
-    total_views_combined = 0
     for pid, p in PRODUCTS.items():
-        cart_user, views_user, sales_user = cart_map.get(pid, (0, 0, 0))
-        cart_base = _shopee_baseline_cart_count(pid)
-        cart_total = cart_base + cart_user
-        # Views ~ pakai last_month_views shopee + views user
-        views_base = p.get("last_month_views", 0)
-        views_total = views_base + views_user
-        cart_rate = round(cart_total / max(1, views_total) * 100, 2)
+        m = cart_map.get(pid)
+        if not m:
+            continue
+        # Hanya tampilkan produk yang punya aktivitas user
+        if (m["cart_user"] + m["views_user"] + m["sales_user"]) <= 0:
+            continue
+        cart_rate = round(m["cart_user"] / max(1, m["views_user"]) * 100, 2)
+        buy_rate = round(m["sales_user"] / max(1, m["views_user"]) * 100, 2)
         items.append({
             "pid": pid,
             "name": p.get("name", ""),
             "cat": p.get("cat", ""),
             "store": p.get("store", ""),
             "price": p.get("price", 0),
-            "cart_user": cart_user,
-            "cart_base": cart_base,
-            "cart_total": cart_total,
-            "views_total": views_total,
+            "views_user": m["views_user"],
+            "cart_user": m["cart_user"],
+            "sales_user": m["sales_user"],
+            "search_count": m["search_count"],
             "cart_rate": cart_rate,
-            "sales_user": sales_user,
+            "buy_rate": buy_rate,
             "rating": p.get("rating", 4.5),
         })
-        total_cart_combined += cart_total
-        total_views_combined += views_total
-    items.sort(key=lambda x: -x["cart_total"])
-    overall_cart_rate = round(total_cart_combined / max(1, total_views_combined) * 100, 2)
-    # Shopee category cart-rate fiktif (deterministik per kategori per hari)
-    cat_rates = {}
-    for cat in {p["cat"] for p in PRODUCTS.values()}:
-        h = hashlib.sha256(f"cart_cat:{cat}:{date.today().isoformat()}".encode()).hexdigest()
-        n = int(h[:8], 16) / float(0xFFFFFFFF)
-        cat_rates[cat] = round(2.5 + n * 6.5, 2)  # 2.5%..9%
+    items.sort(key=lambda x: -(x["cart_user"] + x["sales_user"] * 2 + x["views_user"]))
+    overall_cart_rate = round(total_cart_user / max(1, total_views_user) * 100, 2)
+    overall_buy_rate = round(total_sales_user / max(1, total_views_user) * 100, 2)
     conn.close()
     return jsonify({
         "overall": {
-            "total_cart_combined": total_cart_combined,
-            "total_views_combined": total_views_combined,
-            "overall_cart_rate": overall_cart_rate,
+            # Field BARU (fokus user activity)
             "total_cart_user": total_cart_user,
             "total_views_user": total_views_user,
             "total_sales_user": total_sales_user,
-            "recent_24h": recent_count_24h,
-            "recent_1h": recent_count_1h,
-            "shopee_avg_cart_rate": round(sum(cat_rates.values()) / max(1, len(cat_rates)), 2),
+            "total_searches_user": total_searches,
+            "cart_rate_user": overall_cart_rate,
+            "buy_rate_user": overall_buy_rate,
+            # Window terbaru
+            "cart_24h": cart_24h,
+            "cart_1h": cart_1h,
+            "buy_24h": buy_24h,
+            "buy_1h": buy_1h,
+            "search_24h": search_24h,
+            "search_1h": search_1h,
+            # Backward-compat (frontend lama)
+            "recent_24h": cart_24h,
+            "recent_1h": cart_1h,
         },
-        "category_cart_rate": [
-            {"cat": c, "shopee_cart_rate_pct": r}
-            for c, r in sorted(cat_rates.items(), key=lambda x: -x[1])
-        ],
         "top_products": items[:top_n],
         "day": date.today().isoformat(),
-        "source": "shopee_realtime+local",
+        "source": "user_actions",
     })
 
 
 @app.route('/api/cart_recent')
 def api_cart_recent():
-    """Daftar keranjang terbaru (real, dari user). Dipakai admin untuk lihat
-    aktivitas keranjang pengguna terkini."""
+    """Daftar aktivitas terbaru user (cart + buy) untuk admin Keranjang feed.
+
+    `?action=add` untuk cart saja, `?action=buy` untuk beli saja, default = semua.
+    """
     limit = int(request.args.get('limit', 30))
+    action_filter = request.args.get('action', 'all')  # all | add | buy
     conn = get_db()
-    rows = conn.execute(
-        """SELECT id, product_id, user_id, username, qty, action, created_at
-           FROM cart_log WHERE action='add'
-           ORDER BY id DESC LIMIT ?""",
-        (limit,),
-    ).fetchall()
+    if action_filter in ('add', 'buy'):
+        rows = conn.execute(
+            """SELECT id, product_id, user_id, username, qty, action, created_at
+               FROM cart_log WHERE action=?
+               ORDER BY id DESC LIMIT ?""",
+            (action_filter, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, product_id, user_id, username, qty, action, created_at
+               FROM cart_log
+               ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
     conn.close()
     out = []
     for r in rows:
