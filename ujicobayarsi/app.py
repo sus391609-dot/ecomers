@@ -3,8 +3,9 @@ YarsiMart — Shopee Fashion Analytics + Search Engine
 Flask Backend with SQLite Database + Gemini AI Chatbot
 5000 Produk (50 Kategori x 100 Toko) + Prediksi Real-Time
 """
-from flask import Flask, jsonify, request, render_template
-import sqlite3, os, re, math, json
+from flask import Flask, jsonify, request, render_template, redirect, url_for, session
+from functools import wraps
+import sqlite3, os, re, math, json, hashlib, secrets
 from datetime import datetime, date
 import urllib.request
 import urllib.error
@@ -16,7 +17,56 @@ from shopee_realtime import (
 )
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
+app.secret_key = os.environ.get("YARSIMART_SECRET", "yarsimart-dev-secret-change-me")
 DB_PATH = os.path.join(os.path.dirname(__file__), 'yarsimart.db')
+
+
+# ══════════════════════════════════════════════
+# AUTHENTICATION
+# ══════════════════════════════════════════════
+def hash_pw(password: str) -> str:
+    return hashlib.sha256(("yarsimart::" + password).encode("utf-8")).hexdigest()
+
+
+# Default seed accounts (auto-created saat init_db)
+SEED_ACCOUNTS = [
+    {"username": "admin", "password": "admin123", "role": "admin", "display_name": "Admin YarsiMart"},
+    {"username": "user",  "password": "user123",  "role": "user",  "display_name": "Pengguna Demo"},
+]
+
+
+def login_required(role=None):
+    """Decorator: pastikan user sudah login.
+    role='admin' → hanya admin boleh; role='user' → user atau admin (admin bisa lihat juga)."""
+    def deco(fn):
+        @wraps(fn)
+        def wrapped(*args, **kwargs):
+            uid = session.get("user_id")
+            urole = session.get("role")
+            if not uid:
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "unauthenticated", "message": "Silakan login dulu"}), 401
+                return redirect(url_for("login_page"))
+            if role == "admin" and urole != "admin":
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "forbidden", "message": "Akses admin diperlukan"}), 403
+                return redirect(url_for("user_dashboard"))
+            return fn(*args, **kwargs)
+        return wrapped
+    return deco
+
+
+def current_user():
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    return {
+        "id": uid,
+        "username": session.get("username"),
+        "role": session.get("role"),
+        "display_name": session.get("display_name") or session.get("username"),
+    }
+
 
 GEMINI_API_KEY = "AIzaSyDJcwPYspL9-VEXvR-myXV9k3o5kHD6XLE"
 GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"]
@@ -83,6 +133,25 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (search_id) REFERENCES searches(id)
         );
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'user',
+            display_name TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS cart_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id TEXT NOT NULL,
+            user_id INTEGER,
+            username TEXT,
+            qty INTEGER DEFAULT 1,
+            action TEXT DEFAULT 'add',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_cart_log_pid ON cart_log(product_id);
+        CREATE INDEX IF NOT EXISTS idx_cart_log_created ON cart_log(created_at);
     """)
     # Migrasi: pastikan kolom month_views & last_month_key ada walau DB lama
     cols = {row[1] for row in conn.execute("PRAGMA table_info(product_tokens)").fetchall()}
@@ -94,6 +163,12 @@ def init_db():
         conn.execute(
             "INSERT OR IGNORE INTO product_tokens (product_id, tokens, search_count, views, cart_adds, sales) VALUES (?, 0, 0, 0, 0, 0)",
             (pid,)
+        )
+    # Seed default accounts
+    for acc in SEED_ACCOUNTS:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash, role, display_name) VALUES (?, ?, ?, ?)",
+            (acc["username"], hash_pw(acc["password"]), acc["role"], acc["display_name"]),
         )
     conn.commit()
     conn.close()
@@ -291,6 +366,13 @@ def predict_from_search(pid, total_tokens):
         if ctr > 5.0:      search_boost += 0.5
         if atc_rate > 2.0: search_boost += 1.0
     boosted_monthly = max(1, round(pred_monthly * search_boost)) if pred_monthly > 0 else max(1, round(base.get("last_month_sales", 1) * search_boost))
+    # Data keranjang gabungan (Shopee fiktif + real-time user)
+    cart_base = _shopee_baseline_cart_count(pid)
+    cart_rate_shopee = _shopee_baseline_cart_rate(pid)
+    cart_total = cart_base + cart_adds
+    p_meta = PRODUCTS.get(pid, {}) or {}
+    views_combined = (p_meta.get("last_month_views", 0) or 0) + views
+    cart_rate_combined = round(cart_total / max(1, views_combined) * 100, 2)
     return {
         "tokens": tokens, "views": views, "cart_adds": cart_adds, "sales": sales,
         "ctr": round(ctr, 2), "atc_rate": round(atc_rate, 2), "sales_rate": round(sales_rate, 2),
@@ -300,14 +382,135 @@ def predict_from_search(pid, total_tokens):
         "pred_monthly": boosted_monthly,
         "est_revenue": boosted_monthly * PRODUCTS.get(pid, {}).get("price", 0),
         "search_boost": round(search_boost, 2),
+        # — Cart analytics (Shopee fiktif + real-time tambahan dari user)
+        "cart_base_shopee": cart_base,
+        "cart_user": cart_adds,
+        "cart_total": cart_total,
+        "cart_rate_shopee": cart_rate_shopee,
+        "cart_rate_combined": cart_rate_combined,
     }
 
 # ══════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════
 @app.route('/')
-def index():
-    return render_template('index.html')
+def root():
+    """Root: redirect ke dashboard sesuai role; jika belum login → /login."""
+    user = current_user()
+    if not user:
+        return redirect(url_for("login_page"))
+    if user["role"] == "admin":
+        return redirect(url_for("admin_dashboard"))
+    return redirect(url_for("user_dashboard"))
+
+
+@app.route('/login')
+def login_page():
+    """Halaman login (akses tanpa auth)."""
+    user = current_user()
+    if user:
+        # Sudah login → langsung redirect
+        return redirect(url_for("admin_dashboard") if user["role"] == "admin" else url_for("user_dashboard"))
+    return render_template('login.html')
+
+
+@app.route('/admin')
+@login_required(role='admin')
+def admin_dashboard():
+    """Dashboard admin (analitik + prediksi AI + keranjang)."""
+    return render_template('index.html', current_user=current_user())
+
+
+@app.route('/user')
+@login_required(role='user')
+def user_dashboard():
+    """Dashboard user (search, popular, bestseller, cart, buy)."""
+    return render_template('user.html', current_user=current_user())
+
+
+@app.route('/api/me')
+def api_me():
+    user = current_user()
+    if not user:
+        return jsonify({"authenticated": False}), 200
+    return jsonify({"authenticated": True, "user": user})
+
+
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    data = request.json or {}
+    username = (data.get('username') or '').strip().lower()
+    password = data.get('password') or ''
+    role_pref = (data.get('role') or '').strip().lower()  # opsional: 'admin' / 'user'
+    if not username or not password:
+        return jsonify({"error": "Username & password wajib diisi"}), 400
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, username, password_hash, role, display_name FROM users WHERE username=?",
+        (username,),
+    ).fetchone()
+    conn.close()
+    if not row or row["password_hash"] != hash_pw(password):
+        return jsonify({"error": "Username atau password salah"}), 401
+    if role_pref and row["role"] != role_pref:
+        # Salah pilih role di form (misal user coba login lewat tombol admin)
+        return jsonify({
+            "error": f"Akun ini bukan {role_pref}. Silakan pilih login {row['role']}.",
+        }), 403
+    session.clear()
+    session["user_id"] = row["id"]
+    session["username"] = row["username"]
+    session["role"] = row["role"]
+    session["display_name"] = row["display_name"] or row["username"]
+    return jsonify({
+        "ok": True,
+        "user": {"id": row["id"], "username": row["username"], "role": row["role"],
+                 "display_name": row["display_name"] or row["username"]},
+        "redirect": url_for("admin_dashboard") if row["role"] == "admin" else url_for("user_dashboard"),
+    })
+
+
+@app.route('/api/register', methods=['POST'])
+def api_register():
+    """Registrasi user biasa (role='user'). Admin tidak bisa dibuat dari sini."""
+    data = request.json or {}
+    username = (data.get('username') or '').strip().lower()
+    password = data.get('password') or ''
+    display_name = (data.get('display_name') or username).strip()
+    if not username or not password:
+        return jsonify({"error": "Username & password wajib diisi"}), 400
+    if len(password) < 4:
+        return jsonify({"error": "Password minimal 4 karakter"}), 400
+    if not re.match(r'^[a-z0-9_.\-]{3,32}$', username):
+        return jsonify({"error": "Username 3-32 karakter, huruf kecil/angka/_-."}), 400
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role, display_name) VALUES (?, ?, 'user', ?)",
+            (username, hash_pw(password), display_name),
+        )
+        conn.commit()
+        new_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Username sudah dipakai, coba yang lain"}), 409
+    conn.close()
+    session.clear()
+    session["user_id"] = new_id
+    session["username"] = username
+    session["role"] = "user"
+    session["display_name"] = display_name
+    return jsonify({
+        "ok": True,
+        "user": {"id": new_id, "username": username, "role": "user", "display_name": display_name},
+        "redirect": url_for("user_dashboard"),
+    })
+
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    session.clear()
+    return jsonify({"ok": True, "redirect": url_for("login_page")})
 
 @app.route('/api/search', methods=['POST'])
 def api_search():
@@ -408,8 +611,12 @@ def api_action():
     data = request.json or {}
     pid = data.get('pid')
     action = data.get('action')
+    qty = max(1, int(data.get('qty') or 1))
     if not pid or action not in ['view', 'cart', 'buy']:
         return jsonify({"error": "Invalid action"}), 400
+    user = current_user() or {}
+    uid = user.get("id")
+    uname = user.get("username")
     conn = get_db()
     mk = _month_key()
     if action == 'view':
@@ -425,24 +632,32 @@ def api_action():
         # Cart juga dianggap sinyal kuat → month_views +2
         conn.execute(
             """UPDATE product_tokens SET
-                cart_adds = cart_adds + 1,
+                cart_adds = cart_adds + ?,
                 month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 2 ELSE 2 END,
                 last_month_key = ?
                WHERE product_id=?""",
-            (mk, mk, pid),
+            (qty, mk, mk, pid),
+        )
+        conn.execute(
+            "INSERT INTO cart_log (product_id, user_id, username, qty, action) VALUES (?, ?, ?, ?, 'add')",
+            (pid, uid, uname, qty),
         )
     elif action == 'buy':
         conn.execute(
             """UPDATE product_tokens SET
-                sales = sales + 1,
+                sales = sales + ?,
                 month_views = CASE WHEN last_month_key = ? THEN COALESCE(month_views,0) + 3 ELSE 3 END,
                 last_month_key = ?
                WHERE product_id=?""",
-            (mk, mk, pid),
+            (qty, mk, mk, pid),
+        )
+        conn.execute(
+            "INSERT INTO cart_log (product_id, user_id, username, qty, action) VALUES (?, ?, ?, ?, 'buy')",
+            (pid, uid, uname, qty),
         )
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "message": f"{action} recorded"})
+    return jsonify({"success": True, "message": f"{action} recorded", "qty": qty})
 
 @app.route('/api/stats')
 def api_stats():
@@ -637,10 +852,159 @@ def api_reset():
         DELETE FROM search_product_log;
         UPDATE product_tokens SET tokens=0, search_count=0, views=0, cart_adds=0, sales=0, last_searched=NULL;
         DELETE FROM keyword_counts;
+        DELETE FROM cart_log;
     """)
     conn.commit()
     conn.close()
     return jsonify({"message": "Database reset!"})
+
+
+# ══════════════════════════════════════════════
+# CART ANALYTICS (admin) — Real-time + fallback fiktif Shopee
+# ══════════════════════════════════════════════
+def _shopee_baseline_cart_rate(pid: str) -> float:
+    """Rate keranjang fiktif (deterministik) berbasis hash pid + popularitas Shopee.
+    Dipakai sebagai baseline kalau Shopee live tidak bisa di-fetch.
+    Range realistis: 1.5% - 12% dari views.
+    """
+    p = PRODUCTS.get(pid, {})
+    h = hashlib.sha256(f"cart:{pid}".encode("utf-8")).hexdigest()
+    n = int(h[:8], 16) / float(0xFFFFFFFF)  # 0..1
+    # Produk dengan rating tinggi & terjual banyak → cart-rate lebih tinggi
+    rating = p.get("rating", 4.5)
+    qty = p.get("sp_qty", 0)
+    qty_factor = min(1.0, math.log1p(qty) / math.log(1 + 20000))  # 0..1
+    base = 1.5 + n * 6.0          # 1.5..7.5
+    bonus = qty_factor * 3.0 + (rating - 4.0) * 1.5
+    rate = base + max(0, bonus)
+    return round(min(12.0, max(0.5, rate)), 2)
+
+
+def _shopee_baseline_cart_count(pid: str) -> int:
+    """Jumlah keranjang fiktif untuk produk: berdasarkan sp_qty dan rate."""
+    p = PRODUCTS.get(pid, {})
+    qty = p.get("sp_qty", 0)
+    rate = _shopee_baseline_cart_rate(pid) / 100.0
+    # Asumsi: tiap qty terjual datang dari ~ N keranjang; konversi cart→buy ~25%.
+    base = int(qty * (rate * 4))  # cart_count ~ qty * cart_to_buy_ratio
+    return max(0, base)
+
+
+@app.route('/api/cart_stats')
+def api_cart_stats():
+    """Statistik keranjang real-time (untuk halaman admin "Keranjang").
+
+    Kombinasi:
+      - Baseline fiktif Shopee per produk (deterministik).
+      - Real-time tambahan dari user lokal (cart_log + product_tokens.cart_adds).
+      - Persentase add-to-cart Shopee real-time (live boost) bila tersedia.
+
+    Setiap kali user lokal menambah ke keranjang → angka ini bertambah.
+    """
+    top_n = int(request.args.get('limit', 20))
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT product_id, cart_adds, views, sales FROM product_tokens"
+    ).fetchall()
+    total_cart_user = sum((r["cart_adds"] or 0) for r in rows)
+    total_views_user = sum((r["views"] or 0) for r in rows)
+    total_sales_user = sum((r["sales"] or 0) for r in rows)
+    cart_map = {r["product_id"]: (r["cart_adds"] or 0, r["views"] or 0, r["sales"] or 0) for r in rows}
+    recent_count_24h = conn.execute(
+        "SELECT COUNT(*) as c FROM cart_log WHERE action='add' AND datetime(created_at) >= datetime('now', '-1 day')"
+    ).fetchone()["c"]
+    recent_count_1h = conn.execute(
+        "SELECT COUNT(*) as c FROM cart_log WHERE action='add' AND datetime(created_at) >= datetime('now', '-1 hour')"
+    ).fetchone()["c"]
+    # Per-product details
+    items = []
+    total_cart_combined = 0
+    total_views_combined = 0
+    for pid, p in PRODUCTS.items():
+        cart_user, views_user, sales_user = cart_map.get(pid, (0, 0, 0))
+        cart_base = _shopee_baseline_cart_count(pid)
+        cart_total = cart_base + cart_user
+        # Views ~ pakai last_month_views shopee + views user
+        views_base = p.get("last_month_views", 0)
+        views_total = views_base + views_user
+        cart_rate = round(cart_total / max(1, views_total) * 100, 2)
+        items.append({
+            "pid": pid,
+            "name": p.get("name", ""),
+            "cat": p.get("cat", ""),
+            "store": p.get("store", ""),
+            "price": p.get("price", 0),
+            "cart_user": cart_user,
+            "cart_base": cart_base,
+            "cart_total": cart_total,
+            "views_total": views_total,
+            "cart_rate": cart_rate,
+            "sales_user": sales_user,
+            "rating": p.get("rating", 4.5),
+        })
+        total_cart_combined += cart_total
+        total_views_combined += views_total
+    items.sort(key=lambda x: -x["cart_total"])
+    overall_cart_rate = round(total_cart_combined / max(1, total_views_combined) * 100, 2)
+    # Shopee category cart-rate fiktif (deterministik per kategori per hari)
+    cat_rates = {}
+    for cat in {p["cat"] for p in PRODUCTS.values()}:
+        h = hashlib.sha256(f"cart_cat:{cat}:{date.today().isoformat()}".encode()).hexdigest()
+        n = int(h[:8], 16) / float(0xFFFFFFFF)
+        cat_rates[cat] = round(2.5 + n * 6.5, 2)  # 2.5%..9%
+    conn.close()
+    return jsonify({
+        "overall": {
+            "total_cart_combined": total_cart_combined,
+            "total_views_combined": total_views_combined,
+            "overall_cart_rate": overall_cart_rate,
+            "total_cart_user": total_cart_user,
+            "total_views_user": total_views_user,
+            "total_sales_user": total_sales_user,
+            "recent_24h": recent_count_24h,
+            "recent_1h": recent_count_1h,
+            "shopee_avg_cart_rate": round(sum(cat_rates.values()) / max(1, len(cat_rates)), 2),
+        },
+        "category_cart_rate": [
+            {"cat": c, "shopee_cart_rate_pct": r}
+            for c, r in sorted(cat_rates.items(), key=lambda x: -x[1])
+        ],
+        "top_products": items[:top_n],
+        "day": date.today().isoformat(),
+        "source": "shopee_realtime+local",
+    })
+
+
+@app.route('/api/cart_recent')
+def api_cart_recent():
+    """Daftar keranjang terbaru (real, dari user). Dipakai admin untuk lihat
+    aktivitas keranjang pengguna terkini."""
+    limit = int(request.args.get('limit', 30))
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, product_id, user_id, username, qty, action, created_at
+           FROM cart_log WHERE action='add'
+           ORDER BY id DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        p = PRODUCTS.get(r["product_id"], {})
+        out.append({
+            "id": r["id"],
+            "pid": r["product_id"],
+            "name": p.get("name", "(produk tidak ditemukan)"),
+            "cat": p.get("cat", ""),
+            "store": p.get("store", ""),
+            "price": p.get("price", 0),
+            "qty": r["qty"],
+            "username": r["username"] or "(tamu)",
+            "user_id": r["user_id"],
+            "created_at": r["created_at"],
+            "action": r["action"],
+        })
+    return jsonify({"recent": out, "count": len(out)})
 
 # ══════════════════════════════════════════════
 # GEMINI AI CHATBOT (Enhanced)
@@ -914,7 +1278,15 @@ def _api_chat_impl():
     )
     return jsonify({"reply": fallback_formatted, "status": "local", "error_detail": last_error})
 
-if __name__ == '__main__':
+# Inisialisasi DB di module load supaya user seed (admin/user) selalu tersedia
+# di setiap import — termasuk dijalankan oleh WSGI atau test runner.
+try:
     init_db()
+except Exception as _e:
+    print(f"[YarsiMart] init_db error (akan dicoba ulang saat first request): {_e}")
+
+
+if __name__ == '__main__':
     print(f"[YarsiMart] {TOTAL_PRODUCTS} Produk | 50 Kategori | 100 Toko — http://127.0.0.1:5000")
+    print("[YarsiMart] Login default: admin/admin123 (admin) · user/user123 (user)")
     app.run(debug=True, port=5000, host='0.0.0.0')

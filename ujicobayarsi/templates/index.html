@@ -40,11 +40,27 @@
           <button class="active" onclick="showPage('home', this)">🏠 Beranda</button>
           <button onclick="showPage('prediction', this)">🔮 Prediksi AI</button>
           <button onclick="showPage('analytics', this)">📊 Analitik</button>
+          <button onclick="showPage('cart', this)">🛒 Keranjang</button>
           <button onclick="showPage('products', this)">🛍️ Produk</button>
         </nav>
         <div class="hdr-right">
           <div class="clock-badge">📅 <span id="live-date">—</span> &nbsp;⏰ <span id="live-time">—</span></div>
           <button class="chat-btn" onclick="toggleChat()">💬 Tanya Bot</button>
+          <div class="profile-wrap" id="profile-wrap" style="position:relative">
+            <button class="profile-btn" onclick="toggleAdminProfileMenu(event)" style="display:flex;align-items:center;gap:.5rem;background:var(--bg2);border:1px solid var(--border);border-radius:999px;padding:.25rem .7rem .25rem .3rem;cursor:pointer;font-family:inherit;font-size:.78rem;color:var(--text2)">
+              <span id="profile-avatar" style="width:30px;height:30px;border-radius:50%;background:var(--primary);color:#fff;display:grid;place-items:center;font-family:'Space Grotesk';font-weight:700;font-size:.85rem">A</span>
+              <span id="profile-name" style="font-weight:600;color:var(--text)">Admin</span>
+              <span id="profile-role" style="background:var(--primary);color:#fff;font-size:.55rem;padding:1px 6px;border-radius:4px;font-weight:700">ADMIN</span>
+            </button>
+            <div class="profile-menu" id="profile-menu" style="position:absolute;right:0;top:calc(100% + 8px);min-width:220px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.12);padding:.5rem;display:none;z-index:999">
+              <div style="padding:.5rem .65rem;border-bottom:1px solid var(--border);margin-bottom:.35rem">
+                <b id="pm-display" style="font-size:.82rem">Admin</b>
+                <small id="pm-username" style="display:block;color:var(--text3);font-size:.7rem;margin-top:2px">@admin</small>
+              </div>
+              <button onclick="showPage('cart',document.querySelectorAll('nav button')[3])" style="display:flex;align-items:center;gap:.5rem;padding:.5rem .65rem;border-radius:7px;font-size:.8rem;color:var(--text2);cursor:pointer;background:none;border:none;width:100%;text-align:left;font-family:inherit">🛒 Analitik Keranjang</button>
+              <button onclick="doAdminLogout()" style="display:flex;align-items:center;gap:.5rem;padding:.5rem .65rem;border-radius:7px;font-size:.8rem;color:#dc2626;cursor:pointer;background:none;border:none;width:100%;text-align:left;font-family:inherit">🚪 Keluar</button>
+            </div>
+          </div>
         </div>
       </div>
     </header>
@@ -213,6 +229,66 @@
         <h3>📊 Pertumbuhan Prediksi per Kategori</h3>
         <p style="font-size:.78rem;color:var(--text3);margin-top:.2rem">Kategori dengan pertumbuhan tertinggi dan terendah bulan ini</p>
         <div class="chart-full" style="height:500px"><canvas id="chart-pred-growth"></canvas></div>
+      </div>
+    </div>
+
+    <!-- ═══ KERANJANG (Admin Cart Analytics) ═══ -->
+    <div class="page" id="page-cart">
+      <div class="section-header">
+        <div>
+          <div class="section-title" style="font-size:1.3rem">🛒 Analitik <span>Keranjang</span> — Live</div>
+          <p style="font-size:.78rem;color:var(--text3);margin-top:.25rem">
+            Persentase add-to-cart dari Shopee + tambahan real-time setiap kali user lokal menambah ke keranjang.
+            <b>Saat user di sisi pengguna mengklik 🛒 Keranjang, angka di sini ikut bertambah.</b>
+          </p>
+        </div>
+        <div class="tag" id="cart-live-tag">🟢 Real-time · Sumber Shopee + Lokal</div>
+      </div>
+
+      <!-- KPI Keranjang -->
+      <div class="kpi-grid" id="cart-kpi-grid"></div>
+
+      <!-- Aktivitas terbaru -->
+      <div class="analytics-card" style="margin-bottom:1.2rem">
+        <h3>⏱️ Aktivitas Keranjang Terbaru (Live dari Pengguna)</h3>
+        <p style="font-size:.75rem;color:var(--text3);margin-bottom:.8rem">
+          Daftar produk terbaru yang dimasukkan keranjang oleh pengguna. Auto-refresh tiap 10 detik.
+        </p>
+        <div class="analytics-table-wrap" style="max-height:340px">
+          <table class="data-table" id="cart-recent-table">
+            <tbody>
+              <tr>
+                <td colspan="6" style="text-align:center;color:var(--text3)">Memuat data keranjang real-time...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Top produk dengan keranjang terbanyak -->
+      <div class="analytics-card" style="margin-bottom:1.2rem">
+        <h3>📦 Top Produk dengan Keranjang Terbanyak</h3>
+        <p style="font-size:.75rem;color:var(--text3);margin-bottom:.8rem">
+          Total = baseline Shopee (fiktif, deterministik per produk) + tambahan real-time dari user lokal.
+        </p>
+        <div class="analytics-table-wrap">
+          <table class="data-table" id="cart-top-table">
+            <tbody>
+              <tr>
+                <td colspan="8" style="text-align:center;color:var(--text3)">Memuat...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Cart rate per kategori -->
+      <div class="analytics-card" style="margin-bottom:1.2rem">
+        <h3>📊 Persentase Add-to-Cart Shopee per Kategori</h3>
+        <p style="font-size:.75rem;color:var(--text3);margin-bottom:.8rem">
+          Estimasi rate keranjang dari Shopee (rotasi harian). Range realistis 2.5% - 9% sesuai pola Shopee Indonesia.
+        </p>
+        <div class="chart-full" style="height:340px"><canvas id="chart-cart-cat-rate"></canvas></div>
       </div>
     </div>
 

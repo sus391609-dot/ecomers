@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>YarsiMart — Login</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --primary: #ee4d2d;
+        --primary-dark: #d63a1a;
+        --bg: #fff;
+        --text: #111;
+        --text2: #444;
+        --text3: #888;
+        --border: #e0e0e0;
+        --bg2: #f8f8f8;
+        --shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: "Plus Jakarta Sans", sans-serif;
+        background: linear-gradient(135deg, #0d0d0d 0%, #1a1a1a 55%, #2b1200 100%);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        color: var(--text);
+      }
+      .login-wrap { width: 100%; max-width: 420px; }
+      .brand { text-align: center; margin-bottom: 1.4rem; }
+      .brand-logo {
+        width: 56px; height: 56px; margin: 0 auto .6rem;
+        background: var(--primary); border-radius: 14px;
+        display: grid; place-items: center;
+        font-family: "Space Grotesk", sans-serif; font-weight: 800;
+        font-size: 1.6rem; color: #fff;
+        box-shadow: 0 8px 24px rgba(238, 77, 45, .35);
+      }
+      .brand-name {
+        font-family: "Space Grotesk", sans-serif; font-weight: 700;
+        font-size: 1.25rem; color: #fff;
+      }
+      .brand-name span { color: var(--primary); }
+      .brand-tag { color: #aaa; font-size: .78rem; margin-top: .25rem; }
+
+      .card {
+        background: #fff;
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        padding: 1.6rem 1.4rem;
+      }
+      .role-tabs {
+        display: grid; grid-template-columns: 1fr 1fr;
+        gap: .5rem; margin-bottom: 1.1rem;
+      }
+      .role-tab {
+        background: var(--bg2); border: 1.5px solid var(--border);
+        padding: .8rem .6rem; border-radius: 10px;
+        cursor: pointer; font-weight: 600; font-size: .85rem;
+        color: var(--text2); transition: all .18s;
+        font-family: inherit;
+      }
+      .role-tab:hover { border-color: var(--primary); }
+      .role-tab.active {
+        background: var(--primary); color: #fff;
+        border-color: var(--primary);
+        box-shadow: 0 4px 14px rgba(238, 77, 45, .25);
+      }
+      .role-tab .ico { font-size: 1.05rem; margin-right: .3rem; }
+
+      h2 {
+        font-size: 1.1rem; margin-bottom: .25rem; font-weight: 700;
+      }
+      .sub { color: var(--text3); font-size: .78rem; margin-bottom: 1rem; }
+
+      .field { margin-bottom: .85rem; }
+      .field label {
+        display: block; font-size: .75rem; font-weight: 600;
+        color: var(--text2); margin-bottom: .3rem;
+      }
+      .field input {
+        width: 100%; padding: .7rem .8rem;
+        border: 1.5px solid var(--border); border-radius: 8px;
+        font-family: inherit; font-size: .9rem;
+        outline: none; transition: border-color .15s;
+      }
+      .field input:focus { border-color: var(--primary); }
+
+      .btn-primary {
+        width: 100%; padding: .85rem;
+        background: var(--primary); color: #fff;
+        border: none; border-radius: 9px;
+        font-weight: 700; font-size: .92rem; cursor: pointer;
+        font-family: inherit; transition: background .18s;
+      }
+      .btn-primary:hover { background: var(--primary-dark); }
+      .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+      .err {
+        background: #fee2e2; color: #991b1b;
+        padding: .55rem .7rem; border-radius: 7px;
+        font-size: .78rem; margin-bottom: .8rem;
+        border: 1px solid #fecaca; display: none;
+      }
+      .err.show { display: block; }
+
+      .hint {
+        margin-top: 1rem; padding-top: 1rem;
+        border-top: 1px dashed var(--border);
+        font-size: .73rem; color: var(--text3); line-height: 1.55;
+      }
+      .hint code {
+        background: var(--bg2); padding: 1px 6px;
+        border-radius: 4px; font-family: "Space Grotesk", monospace;
+        color: var(--text);
+      }
+      .toggle-link {
+        display: block; text-align: center; margin-top: .9rem;
+        font-size: .78rem; color: var(--primary);
+        text-decoration: none; font-weight: 600;
+      }
+      .toggle-link:hover { text-decoration: underline; }
+      .form { display: none; }
+      .form.active { display: block; }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrap">
+      <div class="brand">
+        <div class="brand-logo">Y</div>
+        <div class="brand-name">YarsiMart<span> Analytics</span></div>
+        <div class="brand-tag">Shopee Fashion · 5000 Produk · 50 Kategori</div>
+      </div>
+
+      <div class="card">
+        <div class="role-tabs">
+          <button class="role-tab active" data-role="user" onclick="setRole('user')">
+            <span class="ico">👤</span>Login Pengguna
+          </button>
+          <button class="role-tab" data-role="admin" onclick="setRole('admin')">
+            <span class="ico">🛡️</span>Login Admin
+          </button>
+        </div>
+
+        <div id="err" class="err"></div>
+
+        <!-- Login form -->
+        <form id="form-login" class="form active" onsubmit="return doLogin(event)">
+          <h2 id="title-login">Masuk sebagai Pengguna</h2>
+          <p class="sub" id="sub-login">Cari produk Shopee, simpan ke keranjang, dan beli langsung.</p>
+          <div class="field">
+            <label for="login-username">Username</label>
+            <input id="login-username" name="username" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+          </div>
+          <button class="btn-primary" type="submit" id="btn-login">Masuk</button>
+          <a href="#" class="toggle-link" onclick="showForm('register');return false;" id="link-to-register">
+            Belum punya akun? Daftar sebagai pengguna →
+          </a>
+        </form>
+
+        <!-- Register form (hanya untuk role user) -->
+        <form id="form-register" class="form" onsubmit="return doRegister(event)">
+          <h2>Daftar Pengguna Baru</h2>
+          <p class="sub">Daftar untuk belanja di YarsiMart. Akun admin hanya bisa dibuat oleh sistem.</p>
+          <div class="field">
+            <label for="reg-display">Nama Tampilan</label>
+            <input id="reg-display" name="display_name" placeholder="cth. Budi Santoso" />
+          </div>
+          <div class="field">
+            <label for="reg-username">Username</label>
+            <input id="reg-username" name="username" placeholder="huruf kecil, angka, _ atau -" required />
+          </div>
+          <div class="field">
+            <label for="reg-password">Password</label>
+            <input id="reg-password" name="password" type="password" autocomplete="new-password" required />
+          </div>
+          <button class="btn-primary" type="submit" id="btn-register">Daftar &amp; Masuk</button>
+          <a href="#" class="toggle-link" onclick="showForm('login');return false;">
+            Sudah punya akun? Masuk di sini →
+          </a>
+        </form>
+
+        <div class="hint">
+          <b>Demo akun:</b><br />
+          Pengguna → <code>user</code> / <code>user123</code><br />
+          Admin &nbsp;&nbsp;→ <code>admin</code> / <code>admin123</code>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let currentRole = "user";
+      function setRole(r) {
+        currentRole = r;
+        document.querySelectorAll(".role-tab").forEach((b) => {
+          b.classList.toggle("active", b.dataset.role === r);
+        });
+        const isAdmin = r === "admin";
+        document.getElementById("title-login").textContent = isAdmin
+          ? "Masuk sebagai Admin"
+          : "Masuk sebagai Pengguna";
+        document.getElementById("sub-login").textContent = isAdmin
+          ? "Akses analitik, prediksi AI, dan data keranjang real-time."
+          : "Cari produk Shopee, simpan ke keranjang, dan beli langsung.";
+        // Admin tidak boleh register dari sini
+        document.getElementById("link-to-register").style.display = isAdmin ? "none" : "block";
+        showForm("login");
+        hideErr();
+      }
+      function showForm(name) {
+        document.querySelectorAll(".form").forEach((f) => f.classList.remove("active"));
+        document.getElementById("form-" + name).classList.add("active");
+        hideErr();
+      }
+      function showErr(msg) {
+        const el = document.getElementById("err");
+        el.textContent = msg;
+        el.classList.add("show");
+      }
+      function hideErr() {
+        document.getElementById("err").classList.remove("show");
+      }
+
+      async function doLogin(e) {
+        e.preventDefault();
+        hideErr();
+        const btn = document.getElementById("btn-login");
+        btn.disabled = true;
+        btn.textContent = "Memeriksa...";
+        try {
+          const username = document.getElementById("login-username").value.trim();
+          const password = document.getElementById("login-password").value;
+          const r = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password, role: currentRole }),
+          });
+          const data = await r.json();
+          if (!r.ok || !data.ok) {
+            showErr(data.error || "Gagal login. Coba lagi.");
+            return false;
+          }
+          window.location.href = data.redirect || "/";
+        } catch (err) {
+          showErr("Tidak bisa terhubung ke server.");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Masuk";
+        }
+        return false;
+      }
+
+      async function doRegister(e) {
+        e.preventDefault();
+        hideErr();
+        const btn = document.getElementById("btn-register");
+        btn.disabled = true;
+        btn.textContent = "Mendaftarkan...";
+        try {
+          const username = document.getElementById("reg-username").value.trim();
+          const password = document.getElementById("reg-password").value;
+          const display_name = document.getElementById("reg-display").value.trim();
+          const r = await fetch("/api/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password, display_name }),
+          });
+          const data = await r.json();
+          if (!r.ok || !data.ok) {
+            showErr(data.error || "Gagal daftar. Coba username lain.");
+            return false;
+          }
+          window.location.href = data.redirect || "/user";
+        } catch (err) {
+          showErr("Tidak bisa terhubung ke server.");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Daftar & Masuk";
+        }
+        return false;
+      }
+    </script>
+  </body>
+</html>

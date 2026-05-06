@@ -7,7 +7,7 @@ function updateClock(){const n=new Date(),D=["Minggu","Senin","Selasa","Rabu","K
 setInterval(updateClock,1000);updateClock();
 
 // Nav
-function showPage(name,btn){document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));document.getElementById("page-"+name).classList.add("active");if(btn){document.querySelectorAll("nav button").forEach(b=>b.classList.remove("active"));btn.classList.add("active");}if(name==="analytics")setTimeout(renderAnalytics,100);}
+function showPage(name,btn){document.querySelectorAll(".page").forEach(p=>p.classList.remove("active"));document.getElementById("page-"+name).classList.add("active");if(btn){document.querySelectorAll("nav button").forEach(b=>b.classList.remove("active"));btn.classList.add("active");}if(name==="analytics")setTimeout(renderAnalytics,100);if(name==="cart")setTimeout(renderCartAnalytics,100);}
 
 // API
 async function apiPost(url,data){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});return r.json();}
@@ -621,11 +621,202 @@ async function checkout(){
 }
 async function recordAction(pid,action){try{await apiPost('/api/action',{pid,action});}catch(e){}}
 
+// ══════════════════════════════════════════════
+// CART ANALYTICS (Admin page "Keranjang")
+// ══════════════════════════════════════════════
+let cartAnalyticsTimer=null;
+
+function startCartAnalyticsAutoRefresh(){
+  if(cartAnalyticsTimer)clearInterval(cartAnalyticsTimer);
+  cartAnalyticsTimer=setInterval(()=>{
+    const cartPage=document.getElementById("page-cart");
+    if(cartPage&&cartPage.classList.contains("active"))renderCartAnalytics();
+  },10000);
+}
+
+async function renderCartAnalytics(){
+  try{
+    const[stats,recent]=await Promise.all([
+      apiGet('/api/cart_stats?limit=20'),
+      apiGet('/api/cart_recent?limit=30')
+    ]);
+    renderCartKPI(stats.overall||{});
+    renderCartRecentTable(recent.recent||[]);
+    renderCartTopTable(stats.top_products||[]);
+    renderCartCatChart(stats.category_cart_rate||[]);
+    const liveTag=document.getElementById("cart-live-tag");
+    if(liveTag)liveTag.textContent=`🟢 Real-time · ${stats.day||""} · ${stats.source||"shopee+local"}`;
+  }catch(e){console.error("renderCartAnalytics error:",e);}
+}
+
+function renderCartKPI(o){
+  const el=document.getElementById("cart-kpi-grid");
+  if(!el)return;
+  el.innerHTML=`
+    <div class="kpi-card"><div class="kpi-label">🛒 Total Keranjang (Shopee + User)</div><div class="kpi-val" style="color:var(--primary)">${fmtN(o.total_cart_combined||0)}</div><div class="kpi-badge up">Combined live</div></div>
+    <div class="kpi-card"><div class="kpi-label">📊 Cart Rate Total</div><div class="kpi-val" style="color:#22c55e">${(o.overall_cart_rate||0).toFixed(2)}%</div><div class="kpi-badge up">cart / views</div></div>
+    <div class="kpi-card"><div class="kpi-label">📦 Shopee Avg Cart Rate</div><div class="kpi-val" style="font-size:1rem">${(o.shopee_avg_cart_rate||0).toFixed(2)}%</div><div class="kpi-badge up">Rotasi harian Shopee</div></div>
+    <div class="kpi-card"><div class="kpi-label">🟢 Tambahan Live (User)</div><div class="kpi-val" style="color:#0ea5e9">${fmtN(o.total_cart_user||0)}</div><div class="kpi-badge up">+${fmtN(o.recent_24h||0)} dalam 24j · +${fmtN(o.recent_1h||0)} dalam 1j</div></div>`;
+}
+
+function renderCartRecentTable(rows){
+  const tbl=document.getElementById("cart-recent-table");
+  if(!tbl)return;
+  if(!rows.length){
+    tbl.innerHTML='<tbody><tr><td colspan="6" style="text-align:center;color:var(--text3);padding:1.5rem">Belum ada user yang menambah ke keranjang. Begitu user menambah, daftar akan muncul real-time di sini.</td></tr></tbody>';
+    return;
+  }
+  let html=`<thead><tr><th>#</th><th>Waktu</th><th>Pengguna</th><th>Produk</th><th>Kategori · Toko</th><th>Qty · Harga</th></tr></thead><tbody>`;
+  rows.forEach((r,i)=>{
+    const t=r.created_at?new Date((r.created_at.indexOf("T")>=0?r.created_at:r.created_at.replace(" ","T")+"Z")).toLocaleTimeString("id-ID"):"-";
+    html+=`<tr>
+      <td>${i+1}</td>
+      <td><b>${t}</b></td>
+      <td>👤 <b>${r.username||"(tamu)"}</b></td>
+      <td><b style="color:var(--primary)">${ICONS[r.cat]||"🛍️"} ${r.name}</b></td>
+      <td>${r.cat} · ${r.store}</td>
+      <td><b>${r.qty}</b> × ${fmtRp(r.price)} = <b style="color:#16a34a">${fmtRp((r.price||0)*(r.qty||1))}</b></td>
+    </tr>`;
+  });
+  html+='</tbody>';
+  tbl.innerHTML=html;
+}
+
+function renderCartTopTable(rows){
+  const tbl=document.getElementById("cart-top-table");
+  if(!tbl)return;
+  if(!rows.length){tbl.innerHTML='<tbody><tr><td colspan="8" style="text-align:center;color:var(--text3)">Tidak ada data.</td></tr></tbody>';return;}
+  let html=`<thead><tr><th>#</th><th>Produk</th><th>Kategori</th><th>Toko</th><th>Cart Shopee</th><th>Cart User (Live)</th><th>Total Cart</th><th>Cart Rate</th></tr></thead><tbody>`;
+  rows.slice(0,20).forEach((r,i)=>{
+    html+=`<tr>
+      <td>${i+1}</td>
+      <td><b>${ICONS[r.cat]||"🛍️"} ${r.name}</b></td>
+      <td>${r.cat}</td>
+      <td>${r.store}</td>
+      <td>${fmtN(r.cart_base)}</td>
+      <td><b style="color:#0ea5e9">${fmtN(r.cart_user)}</b></td>
+      <td style="font-weight:700;color:var(--primary)">${fmtN(r.cart_total)}</td>
+      <td><span class="kpi-badge ${r.cart_rate>=4?"up":"down"}">${r.cart_rate}%</span></td>
+    </tr>`;
+  });
+  html+='</tbody>';
+  tbl.innerHTML=html;
+}
+
+function renderCartCatChart(catRates){
+  if(!catRates||!catRates.length)return;
+  dc("cartCatRate");
+  const top=catRates.slice(0,20);
+  charts["cartCatRate"]=new Chart(document.getElementById("chart-cart-cat-rate"),{
+    type:"bar",
+    data:{
+      labels:top.map(c=>c.cat),
+      datasets:[{label:"Cart Rate Shopee (%)",data:top.map(c=>c.shopee_cart_rate_pct),backgroundColor:"rgba(238,77,45,0.7)",borderRadius:4}]
+    },
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{y:{beginAtZero:true,ticks:{callback:v=>v+"%"}},x:{ticks:{maxRotation:45,font:{size:9}}}}}
+  });
+}
+
+// ══════════════════════════════════════════════
+// PROFILE / LOGOUT (admin)
+// ══════════════════════════════════════════════
+function toggleAdminProfileMenu(e){
+  if(e)e.stopPropagation();
+  const m=document.getElementById("profile-menu");
+  if(!m)return;
+  m.style.display=(m.style.display==="block")?"none":"block";
+}
+document.addEventListener("click",(e)=>{
+  const w=document.getElementById("profile-wrap");
+  if(w&&!w.contains(e.target)){
+    const m=document.getElementById("profile-menu");
+    if(m)m.style.display="none";
+  }
+});
+
+async function loadAdminProfile(){
+  try{
+    const r=await apiGet('/api/me');
+    if(!r.authenticated){window.location.href="/login";return;}
+    const u=r.user||{};
+    const initials=((u.display_name||u.username||"A").trim()[0]||"A").toUpperCase();
+    const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+    set("profile-avatar",initials);
+    set("profile-name",u.display_name||u.username||"Admin");
+    set("profile-role",(u.role||"admin").toUpperCase());
+    set("pm-display",u.display_name||u.username||"Admin");
+    set("pm-username","@"+(u.username||"admin"));
+  }catch(e){console.error("loadAdminProfile error:",e);}
+}
+
+async function doAdminLogout(){
+  try{
+    const r=await apiPost('/api/logout',{});
+    window.location.href=r.redirect||"/login";
+  }catch(e){
+    window.location.href="/login";
+  }
+}
+
+// ══════════════════════════════════════════════
+// Tambahan: tampilkan data keranjang di halaman Prediksi AI
+// ══════════════════════════════════════════════
+function injectCartDataIntoPrediction(searchPred){
+  const host=document.getElementById("rev-pred");
+  if(!host)return;
+  const existing=document.getElementById("cart-pred-block");
+  const cb=searchPred.cart_base_shopee||0;
+  const cu=searchPred.cart_user||0;
+  const ct=searchPred.cart_total||(cb+cu);
+  const rs=searchPred.cart_rate_shopee||0;
+  const rc=searchPred.cart_rate_combined||0;
+  const block=`
+    <div id="cart-pred-block" style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:12px;padding:1rem;margin-bottom:1rem">
+      <h4 style="font-size:.9rem;margin-bottom:.6rem;color:#c2410c">🛒 Data Keranjang (Live · Shopee + User)</h4>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.6rem">
+        <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.6rem;text-align:center">
+          <div style="font-size:.65rem;color:var(--text3)">Cart Shopee (baseline)</div>
+          <div style="font-size:.95rem;font-weight:800;color:#c2410c;font-family:'Space Grotesk'">${fmtN(cb)}</div>
+        </div>
+        <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.6rem;text-align:center">
+          <div style="font-size:.65rem;color:var(--text3)">Cart User (Live)</div>
+          <div style="font-size:.95rem;font-weight:800;color:#0ea5e9;font-family:'Space Grotesk'">${fmtN(cu)}</div>
+        </div>
+        <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.6rem;text-align:center">
+          <div style="font-size:.65rem;color:var(--text3)">Total Cart</div>
+          <div style="font-size:.95rem;font-weight:800;color:var(--primary);font-family:'Space Grotesk'">${fmtN(ct)}</div>
+        </div>
+        <div style="background:#fff;border:1px solid #fed7aa;border-radius:8px;padding:.6rem;text-align:center">
+          <div style="font-size:.65rem;color:var(--text3)">Cart Rate Combined</div>
+          <div style="font-size:.95rem;font-weight:800;color:#16a34a;font-family:'Space Grotesk'">${rc}%</div>
+          <div style="font-size:.6rem;color:var(--text3);margin-top:2px">Shopee: ${rs}%</div>
+        </div>
+      </div>
+    </div>`;
+  if(existing)existing.outerHTML=block;
+  else host.insertAdjacentHTML("afterbegin",block);
+}
+
+// Patch renderPrediction untuk juga menampilkan cart data:
+const _origRenderPrediction=renderPrediction;
+renderPrediction=async function patchedRenderPrediction(){
+  await _origRenderPrediction.apply(this,arguments);
+  const pid=document.getElementById("pred-select").value;
+  if(!pid)return;
+  try{
+    const sp=await apiGet(`/api/predict/${pid}`);
+    injectCartDataIntoPrediction(sp||{});
+  }catch(e){}
+};
+
 // Init
 window.addEventListener("load",()=>{
   fillSelect();
   renderKPI();
   renderAllProducts();
   refreshDashboard();
+  loadAdminProfile();
+  startCartAnalyticsAutoRefresh();
   setInterval(refreshDashboard,15000);
 });
