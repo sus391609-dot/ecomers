@@ -152,7 +152,22 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_cart_log_pid ON cart_log(product_id);
         CREATE INDEX IF NOT EXISTS idx_cart_log_created ON cart_log(created_at);
+        CREATE TABLE IF NOT EXISTS view_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id TEXT NOT NULL,
+            user_id INTEGER,
+            username TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_view_log_user ON view_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_view_log_created ON view_log(created_at);
     """)
+    # Migrasi tabel searches: tambah user_id & username untuk profile aktivitas
+    scols = {row[1] for row in conn.execute("PRAGMA table_info(searches)").fetchall()}
+    if "user_id" not in scols:
+        conn.execute("ALTER TABLE searches ADD COLUMN user_id INTEGER")
+    if "username" not in scols:
+        conn.execute("ALTER TABLE searches ADD COLUMN username TEXT")
     # Migrasi: pastikan kolom counters bulanan ada walau DB lama
     cols = {row[1] for row in conn.execute("PRAGMA table_info(product_tokens)").fetchall()}
     if "month_views" not in cols:
@@ -521,6 +536,105 @@ def api_me():
     return jsonify({"authenticated": True, "user": user})
 
 
+@app.route('/api/me/activity')
+def api_me_activity():
+    """Aktivitas user yang sedang login: pencarian, views produk, keranjang, beli.
+
+    Dipakai oleh modal profile di /user. Hanya menampilkan aksi user itu sendiri.
+    """
+    user = current_user()
+    if not user:
+        return jsonify({"error": "Belum login"}), 401
+    uid = user["id"]
+    limit = int(request.args.get('limit', 50))
+    conn = get_db()
+
+    # 1) Searches
+    searches = conn.execute(
+        """SELECT id, query, result_count, created_at
+           FROM searches WHERE user_id = ?
+           ORDER BY id DESC LIMIT ?""",
+        (uid, limit),
+    ).fetchall()
+
+    # 2) Views
+    views = conn.execute(
+        """SELECT id, product_id, created_at
+           FROM view_log WHERE user_id = ?
+           ORDER BY id DESC LIMIT ?""",
+        (uid, limit),
+    ).fetchall()
+
+    # 3) Cart adds
+    carts = conn.execute(
+        """SELECT id, product_id, qty, created_at
+           FROM cart_log WHERE user_id = ? AND action = 'add'
+           ORDER BY id DESC LIMIT ?""",
+        (uid, limit),
+    ).fetchall()
+
+    # 4) Buys
+    buys = conn.execute(
+        """SELECT id, product_id, qty, created_at
+           FROM cart_log WHERE user_id = ? AND action = 'buy'
+           ORDER BY id DESC LIMIT ?""",
+        (uid, limit),
+    ).fetchall()
+
+    # Totals (kumulatif, tidak dibatasi limit)
+    total_searches = conn.execute(
+        "SELECT COUNT(*) c FROM searches WHERE user_id = ?", (uid,)
+    ).fetchone()["c"]
+    total_views = conn.execute(
+        "SELECT COUNT(*) c FROM view_log WHERE user_id = ?", (uid,)
+    ).fetchone()["c"]
+    total_carts = conn.execute(
+        "SELECT COALESCE(SUM(qty),0) c FROM cart_log WHERE user_id = ? AND action='add'",
+        (uid,),
+    ).fetchone()["c"]
+    total_buys = conn.execute(
+        "SELECT COALESCE(SUM(qty),0) c FROM cart_log WHERE user_id = ? AND action='buy'",
+        (uid,),
+    ).fetchone()["c"]
+    conn.close()
+
+    def expand_product(pid):
+        p = PRODUCTS.get(pid, {})
+        return {
+            "pid": pid,
+            "name": p.get("name", "(produk tidak ditemukan)"),
+            "cat": p.get("cat", ""),
+            "store": p.get("store", ""),
+            "price": p.get("price", 0),
+        }
+
+    return jsonify({
+        "user": user,
+        "totals": {
+            "searches": total_searches,
+            "views": total_views,
+            "carts": int(total_carts or 0),
+            "buys": int(total_buys or 0),
+        },
+        "searches": [
+            {"id": r["id"], "query": r["query"], "result_count": r["result_count"], "time": r["created_at"]}
+            for r in searches
+        ],
+        "views": [
+            {"id": r["id"], "time": r["created_at"], **expand_product(r["product_id"])}
+            for r in views
+        ],
+        "carts": [
+            {"id": r["id"], "qty": r["qty"], "time": r["created_at"], **expand_product(r["product_id"])}
+            for r in carts
+        ],
+        "buys": [
+            {"id": r["id"], "qty": r["qty"], "time": r["created_at"], **expand_product(r["product_id"])}
+            for r in buys
+        ],
+    })
+
+
 @app.route('/api/login', methods=['POST'])
 def api_login():
     data = request.json or {}
@@ -605,9 +719,15 @@ def api_search():
         return jsonify({"error": "Query kosong"}), 400
     results = match_products(query)
     matched_pids = [r["pid"] for r in results]
+    user = current_user() or {}
+    uid = user.get("id")
+    uname = user.get("username")
     conn = get_db()
     now  = datetime.now().isoformat()
-    cur = conn.execute("INSERT INTO searches (query, result_count, created_at) VALUES (?, ?, ?)", (query, len(results), now))
+    cur = conn.execute(
+        "INSERT INTO searches (query, result_count, created_at, user_id, username) VALUES (?, ?, ?, ?, ?)",
+        (query, len(results), now, uid, uname),
+    )
     search_id = cur.lastrowid
     mk = _month_key()
     for pid in matched_pids:
@@ -731,6 +851,10 @@ def api_action():
                 last_month_key = ?
                WHERE product_id=?""",
             (mk, pid),
+        )
+        conn.execute(
+            "INSERT INTO view_log (product_id, user_id, username) VALUES (?, ?, ?)",
+            (pid, uid, uname),
         )
     elif action == 'cart':
         weight_added = cart_weight * qty
@@ -969,6 +1093,7 @@ def api_reset():
         UPDATE product_tokens SET tokens=0, search_count=0, views=0, cart_adds=0, sales=0, last_searched=NULL;
         DELETE FROM keyword_counts;
         DELETE FROM cart_log;
+        DELETE FROM view_log;
     """)
     conn.commit()
     conn.close()

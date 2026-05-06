@@ -116,6 +116,157 @@ async function doLogout() {
 }
 
 // ──────────────────────────────────────────────
+// Activity modal (Profile → Aktivitas Saya)
+let ACTIVITY_DATA = null;
+let ACTIVITY_TAB = "search";
+
+function fmtTime(ts) {
+  if (!ts) return "-";
+  try {
+    const iso = ts.indexOf("T") >= 0 ? ts : ts.replace(" ", "T") + "Z";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleString("id-ID", {
+      day: "2-digit", month: "short", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch (e) {
+    return ts;
+  }
+}
+
+async function openActivityModal() {
+  closeProfileMenu();
+  const m = document.getElementById("modal-activity");
+  if (!m) return;
+  m.classList.add("open");
+  document.getElementById("lg-body").innerHTML = '<div class="lg-empty">Memuat aktivitas…</div>';
+  try {
+    const r = await apiGet("/api/me/activity?limit=50");
+    ACTIVITY_DATA = r;
+    const sub = document.getElementById("lg-sub-user");
+    if (sub && r.user) {
+      sub.textContent = `${r.user.display_name || r.user.username} · @${r.user.username}`;
+    }
+    const t = r.totals || {};
+    document.getElementById("lg-tot-search").textContent = t.searches || 0;
+    document.getElementById("lg-tot-view").textContent = t.views || 0;
+    document.getElementById("lg-tot-cart").textContent = t.carts || 0;
+    document.getElementById("lg-tot-buy").textContent = t.buys || 0;
+    switchActivityTab(ACTIVITY_TAB);
+  } catch (e) {
+    document.getElementById("lg-body").innerHTML =
+      '<div class="lg-empty" style="color:#dc2626">Gagal memuat aktivitas. Coba lagi.</div>';
+    console.error("openActivityModal error:", e);
+  }
+}
+
+function closeActivityModal() {
+  const m = document.getElementById("modal-activity");
+  if (m) m.classList.remove("open");
+}
+
+function switchActivityTab(tab) {
+  ACTIVITY_TAB = tab;
+  document.querySelectorAll(".lg-tab").forEach((b) => {
+    b.classList.toggle("active", b.dataset.actTab === tab);
+  });
+  renderActivityList();
+}
+
+function renderActivityList() {
+  const body = document.getElementById("lg-body");
+  if (!body || !ACTIVITY_DATA) return;
+  const tab = ACTIVITY_TAB;
+  const data = ACTIVITY_DATA;
+  let rows = [];
+  if (tab === "search") rows = data.searches || [];
+  else if (tab === "view") rows = data.views || [];
+  else if (tab === "cart") rows = data.carts || [];
+  else if (tab === "buy") rows = data.buys || [];
+
+  if (!rows.length) {
+    const emptyMsg = {
+      search: "Belum ada riwayat pencarian. Cari produk apapun di kolom search untuk mulai.",
+      view: "Belum ada produk yang kamu klik. Klik produk di Beranda untuk mencatat views.",
+      cart: "Belum ada produk di keranjang. Tekan tombol 🛒 di kartu produk.",
+      buy: "Belum ada riwayat pembelian. Tekan tombol 💳 atau checkout dari keranjang.",
+    }[tab];
+    body.innerHTML = `<div class="lg-empty">${emptyMsg}</div>`;
+    return;
+  }
+
+  let html = '<div class="lg-list">';
+  rows.forEach((r) => {
+    if (tab === "search") {
+      html += `<div class="lg-row">
+        <div class="lg-icon">🔍</div>
+        <div class="lg-main">
+          <b>"${escapeHtml(r.query)}"</b>
+          <small>${r.result_count || 0} produk ditemukan</small>
+        </div>
+        <div class="lg-side">${fmtTime(r.time)}</div>
+      </div>`;
+    } else if (tab === "view") {
+      html += `<div class="lg-row">
+        <div class="lg-icon">👁️</div>
+        <div class="lg-main">
+          <b>${escapeHtml(r.name)}</b>
+          <small>${escapeHtml(r.cat || "")}${r.store ? " · " + escapeHtml(r.store) : ""}</small>
+        </div>
+        <div class="lg-side">
+          <b>${fmtRp(r.price || 0)}</b>
+          ${fmtTime(r.time)}
+        </div>
+      </div>`;
+    } else if (tab === "cart") {
+      html += `<div class="lg-row">
+        <div class="lg-icon">🛒</div>
+        <div class="lg-main">
+          <b>${escapeHtml(r.name)}</b>
+          <small>Qty <b>${r.qty}</b> · ${escapeHtml(r.cat || "")}${r.store ? " · " + escapeHtml(r.store) : ""}</small>
+        </div>
+        <div class="lg-side">
+          <b>${fmtRp((r.price || 0) * (r.qty || 1))}</b>
+          ${fmtTime(r.time)}
+        </div>
+      </div>`;
+    } else if (tab === "buy") {
+      html += `<div class="lg-row">
+        <div class="lg-icon">💳</div>
+        <div class="lg-main">
+          <b>${escapeHtml(r.name)}</b>
+          <small>Qty <b>${r.qty}</b> · ${escapeHtml(r.cat || "")}${r.store ? " · " + escapeHtml(r.store) : ""}</small>
+        </div>
+        <div class="lg-side">
+          <b style="color:#16a34a">${fmtRp((r.price || 0) * (r.qty || 1))}</b>
+          ${fmtTime(r.time)}
+        </div>
+      </div>`;
+    }
+  });
+  html += "</div>";
+  body.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Close on Escape
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    const m = document.getElementById("modal-activity");
+    if (m && m.classList.contains("open")) closeActivityModal();
+  }
+});
+
+// ──────────────────────────────────────────────
 // Search
 function showSuggestions() {
   const q = document.getElementById("search-input").value.trim().toLowerCase();
