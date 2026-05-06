@@ -127,6 +127,85 @@
       .modal-actions .btn-ok-green { background: #22c55e; }
       .modal-actions .btn-ok-green:hover { background: #16a34a; }
 
+      /* Activity modal (profile -> Aktivitas Saya) */
+      .modal-lg {
+        background: #fff; border-radius: 14px;
+        width: 100%; max-width: 720px;
+        max-height: 88vh; display: flex; flex-direction: column;
+        box-shadow: 0 20px 60px rgba(0,0,0,.25);
+      }
+      .modal-lg-head {
+        padding: 1rem 1.2rem .8rem; border-bottom: 1px solid var(--border);
+      }
+      .modal-lg-head h3 { font-size: 1.1rem; margin: 0 0 .1rem; }
+      .modal-lg-head .lg-sub { font-size: .78rem; color: var(--text3); }
+      .modal-lg-head .lg-close {
+        position: absolute; top: .85rem; right: 1rem;
+        background: transparent; border: 0; font-size: 1.3rem;
+        color: var(--text3); cursor: pointer;
+      }
+      .modal-lg-head .lg-close:hover { color: var(--text); }
+      .lg-totals {
+        display: grid; grid-template-columns: repeat(4,1fr);
+        gap: .5rem; padding: .9rem 1.2rem; border-bottom: 1px solid var(--border);
+      }
+      .lg-stat {
+        background: var(--bg2); border-radius: 8px;
+        padding: .6rem; text-align: center;
+      }
+      .lg-stat .lg-stat-num { font-size: 1.2rem; font-weight: 800; color: var(--primary); }
+      .lg-stat .lg-stat-lbl { font-size: .68rem; color: var(--text3); margin-top: .15rem; text-transform: uppercase; }
+      .lg-tabs {
+        display: flex; border-bottom: 1px solid var(--border);
+        background: var(--bg2);
+      }
+      .lg-tab {
+        flex: 1; padding: .65rem .5rem; background: transparent; border: 0;
+        font-family: inherit; font-size: .82rem; color: var(--text2);
+        cursor: pointer; border-bottom: 2px solid transparent;
+        font-weight: 500;
+      }
+      .lg-tab:hover { background: #f3f4f6; color: var(--text); }
+      .lg-tab.active {
+        background: #fff; color: var(--primary); border-bottom-color: var(--primary);
+        font-weight: 700;
+      }
+      .lg-body {
+        flex: 1; overflow-y: auto; padding: .8rem 1rem;
+        background: #fff;
+      }
+      .lg-list { display: flex; flex-direction: column; gap: .5rem; }
+      .lg-row {
+        display: flex; align-items: center; gap: .7rem;
+        padding: .55rem .75rem; border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .lg-row .lg-icon {
+        width: 36px; height: 36px; border-radius: 8px;
+        background: var(--bg2); display: flex; align-items: center; justify-content: center;
+        font-size: 1.1rem; flex-shrink: 0;
+      }
+      .lg-row .lg-main { flex: 1; min-width: 0; }
+      .lg-row .lg-main b {
+        display: block; color: var(--text); font-size: .87rem;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .lg-row .lg-main small {
+        font-size: .72rem; color: var(--text3);
+      }
+      .lg-row .lg-side {
+        text-align: right; font-size: .76rem; color: var(--text3);
+        flex-shrink: 0; white-space: nowrap;
+      }
+      .lg-row .lg-side b { color: var(--primary); display: block; font-size: .82rem; }
+      .lg-empty {
+        text-align: center; padding: 2rem 1rem; color: var(--text3); font-size: .85rem;
+      }
+      @media (max-width: 540px) {
+        .lg-totals { grid-template-columns: repeat(2,1fr); }
+        .lg-tab { font-size: .72rem; }
+      }
+
       /* Recently viewed / activity strip */
       .activity-strip {
         background: linear-gradient(135deg, #fff7f3, #fff);
@@ -164,6 +243,7 @@
                 <b id="pm-display">Pengguna</b>
                 <small id="pm-username">@username</small>
               </div>
+              <button class="pm-item" onclick="openActivityModal()">📋 Aktivitas Saya</button>
               <button class="pm-item" onclick="toggleCart()">🛒 Keranjang Saya (<span id="pm-cart-count">0</span>)</button>
               <button class="pm-item" onclick="scrollToSection('section-bestseller')">🏆 Produk Terlaris</button>
               <button class="pm-item" onclick="scrollToSection('section-trending')">🔥 Produk Terpopuler</button>
@@ -284,6 +364,32 @@
         <div class="modal-actions">
           <button class="btn-cancel" onclick="closeBuyModal()">Batal</button>
           <button class="btn-ok btn-ok-green" id="modal-ok-btn" onclick="confirmBuy()">Ya, Beli Sekarang</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Activity Modal (Profile → Aktivitas Saya) -->
+    <div class="modal-backdrop" id="modal-activity" onclick="if(event.target===this)closeActivityModal()">
+      <div class="modal-lg" style="position:relative">
+        <button class="lg-close" onclick="closeActivityModal()" title="Tutup">✕</button>
+        <div class="modal-lg-head">
+          <h3>📋 Aktivitas Saya</h3>
+          <div class="lg-sub" id="lg-sub-user">Riwayat lengkap aksi kamu di YarsiMart.</div>
+        </div>
+        <div class="lg-totals" id="lg-totals">
+          <div class="lg-stat"><div class="lg-stat-num" id="lg-tot-search">0</div><div class="lg-stat-lbl">🔍 Pencarian</div></div>
+          <div class="lg-stat"><div class="lg-stat-num" id="lg-tot-view">0</div><div class="lg-stat-lbl">👁️ Views</div></div>
+          <div class="lg-stat"><div class="lg-stat-num" id="lg-tot-cart">0</div><div class="lg-stat-lbl">🛒 Keranjang</div></div>
+          <div class="lg-stat"><div class="lg-stat-num" id="lg-tot-buy">0</div><div class="lg-stat-lbl">💳 Beli</div></div>
+        </div>
+        <div class="lg-tabs" role="tablist">
+          <button class="lg-tab active" data-act-tab="search" onclick="switchActivityTab('search')">🔍 Pencarian</button>
+          <button class="lg-tab" data-act-tab="view" onclick="switchActivityTab('view')">👁️ Views Produk</button>
+          <button class="lg-tab" data-act-tab="cart" onclick="switchActivityTab('cart')">🛒 Keranjang</button>
+          <button class="lg-tab" data-act-tab="buy" onclick="switchActivityTab('buy')">💳 Pembelian</button>
+        </div>
+        <div class="lg-body" id="lg-body">
+          <div class="lg-empty">Memuat aktivitas…</div>
         </div>
       </div>
     </div>
